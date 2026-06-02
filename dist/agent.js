@@ -22,7 +22,7 @@ import { StreamingInputSource, commitPartialResponse, isAsyncIterable, setInterr
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
 const DEFAULT_MAX_TURNS = 25;
 const DEFAULT_MAX_BUDGET_USD = 1.0;
-const DEFAULT_APP_TITLE = 'openrouter-agent-coder';
+const DEFAULT_APP_TITLE = 'openrouter-agent-harness';
 const ABORT_REASON = 'aborted';
 /**
  * Default system instructions for the built-in code-editing agent. Exported so

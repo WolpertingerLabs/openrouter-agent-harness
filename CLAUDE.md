@@ -1,4 +1,4 @@
-# OpenRouter Agent Coder
+# OpenRouter Agent Harness
 
 A CLI-based code editor agent built natively on OpenRouter Agent SDK.
 

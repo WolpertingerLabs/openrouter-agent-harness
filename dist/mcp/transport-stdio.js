@@ -10,7 +10,7 @@
  * Not wired into agent runs yet — Card 5.2.4 owns the tool bridge and Card
  * 5.2.5 owns lifecycle hooks. This module is preview-stage public surface.
  */
-const CLIENT_NAME = 'openrouter-agent-coder';
+const CLIENT_NAME = 'openrouter-agent-harness';
 const CLIENT_VERSION = '0.2.0';
 /**
  * Stdio MCP client. Wraps subprocess spawn, JSON-RPC handshake, and the

@@ -217,7 +217,7 @@ async function main(): Promise<void> {
   const client = new OpenRouter({
     apiKey,
     ...(baseUrl ? { serverURL: baseUrl } : {}),
-    appTitle: 'openrouter-agent-coder/recorder',
+    appTitle: 'openrouter-agent-harness/recorder',
   } as ConstructorParameters<typeof OpenRouter>[0]);
 
   const steps: FixtureStep[] = [];

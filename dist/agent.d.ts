@@ -220,7 +220,7 @@ export interface OpenRouterAgentRunOptions {
     logsRoot?: string;
     /** Override the OpenRouter API base URL. */
     baseUrl?: string;
-    /** App title sent in OR client metadata. Defaults to `'openrouter-agent-coder'`. */
+    /** App title sent in OR client metadata. Defaults to `'openrouter-agent-harness'`. */
     appTitle?: string;
     /** Optional diagnostic logger. No logger → silent. */
     logger?: AgentLogger;

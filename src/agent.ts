@@ -88,7 +88,7 @@ import {
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
 const DEFAULT_MAX_TURNS = 25;
 const DEFAULT_MAX_BUDGET_USD = 1.0;
-const DEFAULT_APP_TITLE = 'openrouter-agent-coder';
+const DEFAULT_APP_TITLE = 'openrouter-agent-harness';
 const ABORT_REASON = 'aborted';
 
 /**
@@ -315,7 +315,7 @@ export interface OpenRouterAgentRunOptions {
   logsRoot?: string;
   /** Override the OpenRouter API base URL. */
   baseUrl?: string;
-  /** App title sent in OR client metadata. Defaults to `'openrouter-agent-coder'`. */
+  /** App title sent in OR client metadata. Defaults to `'openrouter-agent-harness'`. */
   appTitle?: string;
   /** Optional diagnostic logger. No logger → silent. */
   logger?: AgentLogger;

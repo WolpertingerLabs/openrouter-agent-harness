@@ -1,6 +1,6 @@
 # Plan: Comparative Parity Harness (Phase 6)
 
-> A follow-on phase to [`claude-sdk-parity-roadmap.md`](./claude-sdk-parity-roadmap.md). Replaces doc-claimed parity with **executable parity proofs**: run the same scenario through both the Claude Agent SDK and `openrouter-agent-coder`, and assert equivalent behavior. Two operating modes — a deterministic emulator for exact-match comparison (cheap, runs every PR) and a real-API mode for canary validation (paid, runs nightly/on-demand).
+> A follow-on phase to [`claude-sdk-parity-roadmap.md`](./claude-sdk-parity-roadmap.md). Replaces doc-claimed parity with **executable parity proofs**: run the same scenario through both the Claude Agent SDK and `openrouter-agent-harness`, and assert equivalent behavior. Two operating modes — a deterministic emulator for exact-match comparison (cheap, runs every PR) and a real-API mode for canary validation (paid, runs nightly/on-demand).
 
 Status: **Carded 2026-05-24 — all 13 issues in Backlog.** Issues #120–#132 cover Cards 6.S1 / 6.1 / 6.2 / 6.3 / 6.4 / 6.5a / 6.5b / 6.5c / 6.6 / 6.7 / 6.8 / 6.9 / 6.10. Promote 6.S1 (#120) to Ready once Phase 5 build cards (5.2.5, 5.3, 5.5, 5.6, 5.7, 5.8) close — the parity surface needs to stop moving before scenarios get authored against it. Issue cross-references in card bodies use real GH numbers.
 
@@ -53,7 +53,7 @@ This is the **only** test layer that exercises both code bases against the same 
               │                                 │
               ▼                                 ▼
    ┌─────────────────────┐         ┌─────────────────────────┐
-   │ Claude Agent SDK    │         │ OpenRouter Agent Coder  │
+   │ Claude Agent SDK    │         │ OpenRouter Agent Harness  │
    │ baseURL override →  │         │ baseUrl override →      │
    └──────────┬──────────┘         └────────────┬────────────┘
               │                                 │
@@ -174,7 +174,7 @@ Both runs use **independent emulator script cursors** (so neither SDK's behavior
 
 Both SDKs already support this, but **asymmetrically**:
 
-- **`@openrouter/agent`** — the openrouter-agent-coder library plumbs `baseUrl` through to the OR client constructor's `serverURL` parameter (`src/agent.ts:398`). Already tested at `src/agent.test.ts:325`. Passed via **ctor config**.
+- **`@openrouter/agent`** — the openrouter-agent-harness library plumbs `baseUrl` through to the OR client constructor's `serverURL` parameter (`src/agent.ts:398`). Already tested at `src/agent.test.ts:325`. Passed via **ctor config**.
 - **`@anthropic-ai/claude-agent-sdk`** — respects `ANTHROPIC_BASE_URL`; the agent SDK forwards env config to its underlying Anthropic client. Passed via **env injection per test process**. (6.S1 confirms the agent-SDK wrapper doesn't swallow it and pins the agent-SDK version that exhibits this behavior.)
 
 Document the asymmetry but don't try to unify it — the wire formats differ anyway, so a shared abstraction would leak.

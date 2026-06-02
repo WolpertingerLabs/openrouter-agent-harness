@@ -522,9 +522,9 @@ internalCtl.signal])`. Recursion-depth gate reuses the singular tool's
   on `OpenRouterAgentRunOptions` is documented as a stub with the same
   no-op caveat so the surface stays stable. Documented in the README
   Subagents subsection and parity matrix (`Subagent tool restrictions`
-  graduates Partial → Full). ([#59](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/59))
+  graduates Partial → Full). ([#59](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/59))
 
-- Phase 4.7: subagent system — basic, sequential. New `spawnSubagentTool(opts, ctx?)` factory (exported from the library root) plus `OpenRouterAgentRun({ enableSubagents: true, maxSubagentDepth?: 3, currentSubagentDepth?: 0 })` constructor options that wire the built-in `spawn_subagent` tool into the default bundle. The tool's Zod input schema accepts `description: string`, optional `tools?: string[]` (whitelist of tool names that narrows the inherited parent pool — unknown names silently dropped), optional `instructions?: string`, `max_turns?: number`, and `max_budget_usd?: number` (each defaults to the parent's value when omitted). When invoked, the parent's `spawn_subagent.execute` derives a child session id (`<parentSessionId>:sub:<uuid>`), composes the parent's abort signal with a subagent-internal `AbortController` via `AbortSignal.any`, and builds a child `OpenRouterAgentRun` inheriting the parent's `apiKey` / `baseUrl` / `appTitle` / `logsRoot` / `logger` / `onHook` / `model` / `cwd` / `persistSession`. The runner drains the child's `AgentCoreEvent` stream and returns the captured `SubagentResultSummary` (status, usage, costUsd, durationMs, reason, plus concatenated assistant text) as a single `tool_result` — subagent events do NOT bleed into the parent's `for await`. Recursion cap: the spawn check `parent.currentSubagentDepth + 1` against `maxSubagentDepth` rejects when the next depth would meet or exceed the cap (default 3 → chain of at most three levels: parent → sub → sub-sub → reject 4th), surfacing `{ error: 'max subagent depth (3) exceeded', subagentSessionId }`. The `HookEvent` union is extended with `'SubagentStart'` and `'SubagentEnd'`; both payloads carry `parentSessionId`, `subagentSessionId`, `depth`, and (on End) the full `SubagentResultSummary`. Both fire even on the depth-cap rejection path so audit consumers see a matched Start/End pair. Opt-in via `OpenRouterAgentRun({ enableSubagents: true })` or by passing `AllToolsOptions.spawnSubagent` to `allTools()`; the tool is **NOT** in the default bundle when `enableSubagents` is unset (mirrors the host-hook opt-in pattern from Phase 4.1/4.2). ([#58](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/58))
+- Phase 4.7: subagent system — basic, sequential. New `spawnSubagentTool(opts, ctx?)` factory (exported from the library root) plus `OpenRouterAgentRun({ enableSubagents: true, maxSubagentDepth?: 3, currentSubagentDepth?: 0 })` constructor options that wire the built-in `spawn_subagent` tool into the default bundle. The tool's Zod input schema accepts `description: string`, optional `tools?: string[]` (whitelist of tool names that narrows the inherited parent pool — unknown names silently dropped), optional `instructions?: string`, `max_turns?: number`, and `max_budget_usd?: number` (each defaults to the parent's value when omitted). When invoked, the parent's `spawn_subagent.execute` derives a child session id (`<parentSessionId>:sub:<uuid>`), composes the parent's abort signal with a subagent-internal `AbortController` via `AbortSignal.any`, and builds a child `OpenRouterAgentRun` inheriting the parent's `apiKey` / `baseUrl` / `appTitle` / `logsRoot` / `logger` / `onHook` / `model` / `cwd` / `persistSession`. The runner drains the child's `AgentCoreEvent` stream and returns the captured `SubagentResultSummary` (status, usage, costUsd, durationMs, reason, plus concatenated assistant text) as a single `tool_result` — subagent events do NOT bleed into the parent's `for await`. Recursion cap: the spawn check `parent.currentSubagentDepth + 1` against `maxSubagentDepth` rejects when the next depth would meet or exceed the cap (default 3 → chain of at most three levels: parent → sub → sub-sub → reject 4th), surfacing `{ error: 'max subagent depth (3) exceeded', subagentSessionId }`. The `HookEvent` union is extended with `'SubagentStart'` and `'SubagentEnd'`; both payloads carry `parentSessionId`, `subagentSessionId`, `depth`, and (on End) the full `SubagentResultSummary`. Both fire even on the depth-cap rejection path so audit consumers see a matched Start/End pair. Opt-in via `OpenRouterAgentRun({ enableSubagents: true })` or by passing `AllToolsOptions.spawnSubagent` to `allTools()`; the tool is **NOT** in the default bundle when `enableSubagents` is unset (mirrors the host-hook opt-in pattern from Phase 4.1/4.2). ([#58](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/58))
 
 - Phase 4.6: file checkpointing. New `createCheckpoint(sessionId,
 logsRoot, files[], { logger? })`, `listCheckpoints(sessionId, logsRoot)`,
@@ -549,7 +549,7 @@ logsRoot, files[], { logger? })`, `listCheckpoints(sessionId, logsRoot)`,
   `size` match its most-recent prior snapshot in the same session, the
   new snapshot is created via `fs.link` (hard-link) instead of copying
   bytes — falls through to `copyFile` on `EXDEV` / unsupported FS.
-  ([#57](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/57))
+  ([#57](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/57))
 - Phase 4.6: `checkpoint?: boolean` constructor option on
   `OpenRouterAgentRun` (default `false`). When `true`, the built-in
   `write_file` and `edit_file` tools snapshot their target path under
@@ -562,7 +562,7 @@ persistSession is false'` and the underlying write proceeds normally.
   Ignored when the caller supplies a custom `tools` array (the option
   threads through the built-in tool bundle only). Both tools also gained
   a per-call `checkpoint?: boolean` field on their Zod input schemas.
-  ([#57](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/57))
+  ([#57](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/57))
 - Phase 4.6: new public exports from the library root: `createCheckpoint`,
   `listCheckpoints`, `restoreCheckpoint`, `encodePath`, `decodePath`,
   `MAX_CHECKPOINTS_PER_SESSION`, plus types `Checkpoint`,
@@ -571,7 +571,7 @@ persistSession is false'` and the underlying write proceeds normally.
   `checkpoint`, `persistSession`, `logger`) threaded in by `agent.ts` so
   the checkpointing tools can find the session directory and emit warn
   logs; tools that don't need them ignore the new fields.
-  ([#57](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/57))
+  ([#57](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/57))
 - Phase 4.5: session forking. New `forkSession({ sessionId, newSessionId?,
 logsRoot })` standalone helper plus an `OpenRouterAgentRun.fork({
 newSessionId? })` instance wrapper that reuses the run's resolved
@@ -719,7 +719,7 @@ truncated }`, with `matches` sorted lexicographically and capped at
   character classes, and zero-or-more-segments matching when `**` is
   followed by `/`; patterns that don't use those features compile to the
   same regex as before.
-  ([#50](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/50))
+  ([#50](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/50))
 - Four optional input fields on the `grep_files` tool schema: `before_context`
   / `after_context` / `context` (context-line capture, like `grep -B`/`-A`/`-C`,
   each silently clamped to `[0, 20]`) and `type` (built-in filetype alias —
@@ -737,7 +737,7 @@ truncated }`, with `matches` sorted lexicographically and capped at
   result-assembly step (the scan always produces the full per-line match list
   internally); existing callers that pass none of the new fields see the
   identical pre-3.10 shape.
-  ([#49](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/49))
+  ([#49](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/49))
 - Two optional input fields on the `run_command` tool schema:
   `description` (free-text advisory note from the model, forwarded through
   `tool_call.input` — never gates execution, never appears in stdout/stderr)
@@ -749,7 +749,7 @@ effectiveMs })` and proceeds with the clamped value (never throws). The
   timeout path as well, matching the long-standing abort-path behaviour;
   the abort path itself is unchanged. `MAX_TIMEOUT_MS` is exported from
   `src/tools/run-command.ts`. Existing callers that pass neither field see
-  no behavioural change. ([#48](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/48))
+  no behavioural change. ([#48](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/48))
 - `run.messages()` method on `OpenRouterAgentRun` returning an
   `AsyncIterable<AgentMessage>` — a typed message-level view of the run
   aggregated from the underlying `AgentCoreEvent` stream. Yields a fixed
@@ -769,7 +769,7 @@ effectiveMs })` and proceeds with the clamped value (never throws). The
   run** — `for await (... of run)` (raw events) and `run.messages()` (typed
   messages) are mutually exclusive on the same instance; the second call
   throws (single-shot guard). Existing event-stream consumers are entirely
-  unaffected. ([#47](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/47))
+  unaffected. ([#47](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/47))
 - `PreToolUseAction` discriminated union (`{ action: 'continue' }` /
   `{ action: 'block'; reason: string }` / `{ action: 'modify'; input: unknown }`)
   exported from the library. `onHook` handlers may now return one of these
@@ -786,7 +786,7 @@ effectiveMs })` and proceeds with the clamped value (never throws). The
   hook-`block` beats `canUseTool`-allow; `canUseTool`-`deny` beats
   hook-`continue` / `modify`. A throw from a `PreToolUse` handler is still
   logged-and-swallowed (treated as `continue`, never as `block`) — same
-  safety contract as Phase 1.7. ([#46](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/46))
+  safety contract as Phase 1.7. ([#46](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/46))
 - Three new lifecycle hook events on `onHook`: `Setup` (fires once per
   `OpenRouterAgentRun` instance, BEFORE `SessionStart` — useful for first-run
   resource provisioning), `Stop` (fires LAST in the run, after `SessionEnd`,
@@ -796,23 +796,23 @@ effectiveMs })` and proceeds with the clamped value (never throws). The
   `Setup` → `SessionStart` → `PreToolUse` / `PostToolUse` pairs → `SessionEnd` → `Stop`.
   Existing four hook events (`SessionStart`, `SessionEnd`, `PreToolUse`,
   `PostToolUse`) are unchanged.
-  ([#45](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/45))
+  ([#45](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/45))
 - `ctx.notify(level, message, context?)` on the tool execution context — a
   thin facade over `onHook({ event: 'Notification', ... })` so library code or
   custom tools can push status updates without taking a direct dependency on
   the hook callback. Available to both built-in and custom tools via the SDK
   `ToolExecuteContext` injected by the hook wrapper; undefined (no-op) when
   `onHook` is omitted, so callers can use the `ctx.notify?.(...)` form
-  unconditionally. ([#45](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/45))
+  unconditionally. ([#45](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/45))
 - `tool()` helper for building a `Tool` from a Zod schema with a typed `execute`
   callback — mirrors the Claude Agent SDK's `tool()` shape so callers porting
   from `@anthropic-ai/claude-agent-sdk` can keep the same object literal. Drops
   into `OpenRouterAgentRunOptions['tools']` unchanged and integrates with
   `canUseTool`, `onHook`, and the existing run loop. Schema-validation failures
   are surfaced as `tool_result.isError = true` instead of crashing the run.
-  ([#44](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/44))
+  ([#44](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/44))
 - `createSdkMcpServer({ name, version, tools })` factory returning an
   in-process `{ name, version, tools }` value bag — matches the Claude Agent
   SDK shape so host code can build against the eventual MCP surface. Real MCP
   transports (stdio / HTTP+SSE / `.mcp.json` discovery) come in Phase 5.2.
-  ([#44](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/44))
+  ([#44](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/44))

@@ -337,7 +337,7 @@ describe('OpenRouterAgentRun defaults', () => {
     expect(ctorArgs.appTitle).toBe('my-app');
   });
 
-  it('defaults appTitle to openrouter-agent-coder', async () => {
+  it('defaults appTitle to openrouter-agent-harness', async () => {
     callModelMock.mockImplementation(
       fakeCallModel({
         events: [
@@ -352,7 +352,7 @@ describe('OpenRouterAgentRun defaults', () => {
       prompt: 'p',
     });
     await collect(run);
-    expect(openRouterCtorMock.mock.calls[0][0].appTitle).toBe('openrouter-agent-coder');
+    expect(openRouterCtorMock.mock.calls[0][0].appTitle).toBe('openrouter-agent-harness');
   });
 });
 

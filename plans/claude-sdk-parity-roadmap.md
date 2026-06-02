@@ -33,18 +33,18 @@ All builds-on items reference primitives already shipped. Most are independent a
 
 | Card     | Title                                                                                                                                                   | Builds on                      | Est.   | Depends on   |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ | ------ | ------------ |
-| ~~3.1~~  | ~~Named permission modes (default/acceptEdits/bypassPermissions)~~ ([#65](https://github.com/Cybourgeoisie/openrouter-agent-coder/pull/65))             | ~~`canUseTool` (Phase 1.4)~~   | ~~4h~~ | ~~—~~        |
+| ~~3.1~~  | ~~Named permission modes (default/acceptEdits/bypassPermissions)~~ ([#65](https://github.com/WolpertingerLabs/openrouter-agent-harness/pull/65))             | ~~`canUseTool` (Phase 1.4)~~   | ~~4h~~ | ~~—~~        |
 | ~~3.2~~  | ~~`allowedTools` / `disallowedTools` config syntax (`Bash(npm *)`)~~ (PR pending)                                                                       | ~~`canUseTool` + 3.1~~         | ~~3h~~ | ~~3.1~~      |
-| ~~3.3~~  | ~~Plan mode (read-only tool filter)~~ ([#68](https://github.com/Cybourgeoisie/openrouter-agent-coder/pull/68))                                          | ~~`canUseTool` + 3.1~~         | ~~1h~~ | ~~3.1~~      |
+| ~~3.3~~  | ~~Plan mode (read-only tool filter)~~ ([#68](https://github.com/WolpertingerLabs/openrouter-agent-harness/pull/68))                                          | ~~`canUseTool` + 3.1~~         | ~~1h~~ | ~~3.1~~      |
 | ~~3.4~~  | ~~CLAUDE.md / `.claude/` auto-discovery → `instructions`~~ (PR pending)                                                                                 | ~~`instructions` (Phase 1.5)~~ | ~~4h~~ | ~~—~~        |
 | ~~3.5~~  | ~~`tool()` helper + Zod-schema convenience + SDK-MCP-shaped helper~~ (PR pending)                                                                       | ~~`tools` arg (Phase 1.2)~~    | ~~5h~~ | ~~—~~        |
 | ~~3.6~~  | ~~Remaining lifecycle hooks: `Stop`, `Setup`, `Notification`~~ (PR pending)                                                                             | ~~`onHook` (Phase 1.7)~~       | ~~5h~~ | ~~—~~        |
 | ~~3.7~~  | ~~Block-and-modify hook capability (`PreToolUse` can short-circuit)~~ (PR pending)                                                                      | ~~`onHook` + `canUseTool`~~    | ~~6h~~ | ~~3.1, 3.2~~ |
 | ~~3.8~~  | ~~Rich message stream (typed `AssistantMessage` etc.)~~ (PR pending)                                                                                    | ~~`AgentCoreEvent`~~           | ~~6h~~ | ~~—~~        |
 | ~~3.9~~  | ~~Enhanced Bash: description field, configurable timeout~~ (PR pending)                                                                                 | ~~`run_command`~~              | ~~2h~~ | ~~—~~        |
-| ~~3.10~~ | ~~Enhanced Grep: `-A`/`-B`/`-C`, filetype filters, output modes~~ (PR pending [#49](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/49)) | ~~`grep_files`~~               | ~~4h~~ | ~~—~~        |
-| ~~3.11~~ | ~~Glob tool (new, separate from `list_directory`)~~ (PR pending [#50](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/50))               | ~~_new_~~                      | ~~3h~~ | ~~—~~        |
-| ~~3.12~~ | ~~`persistSession: false` (in-memory only sessions)~~ (PR pending [#51](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/51))             | ~~`FileStateAccessor`~~        | ~~3h~~ | ~~—~~        |
+| ~~3.10~~ | ~~Enhanced Grep: `-A`/`-B`/`-C`, filetype filters, output modes~~ (PR pending [#49](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/49)) | ~~`grep_files`~~               | ~~4h~~ | ~~—~~        |
+| ~~3.11~~ | ~~Glob tool (new, separate from `list_directory`)~~ (PR pending [#50](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/50))               | ~~_new_~~                      | ~~3h~~ | ~~—~~        |
+| ~~3.12~~ | ~~`persistSession: false` (in-memory only sessions)~~ (PR pending [#51](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/51))             | ~~`FileStateAccessor`~~        | ~~3h~~ | ~~—~~        |
 
 **Phase 3 total:** ~50h.
 
@@ -58,15 +58,15 @@ Each is a self-contained implementation. Sequencing matters only within the suba
 
 | Card    | Title                                                                                                                 | Est.    | Risk                 | Depends on |
 | ------- | --------------------------------------------------------------------------------------------------------------------- | ------- | -------------------- | ---------- |
-| ~~4.1~~ | ~~AskUserQuestion tool~~ ([#52](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/52))                   | ~~4h~~  | ~~host-UI contract~~ | ~~—~~      |
-| ~~4.2~~ | ~~TaskCreate / TaskUpdate tools~~ ([#53](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/53))          | ~~8h~~  | ~~host-UI contract~~ | ~~—~~      |
-| ~~4.3~~ | ~~NotebookEdit tool~~ ([#54](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/54))                      | ~~10h~~ | ~~low~~              | ~~—~~      |
-| ~~4.4~~ | ~~Monitor tool (background-script watch)~~ ([#55](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/55)) | ~~10h~~ | ~~low~~              | ~~—~~      |
-| ~~4.5~~ | ~~Session forking~~ ([#56](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/56))                        | ~~8h~~  | ~~low~~              | ~~—~~      |
-| ~~4.6~~ | ~~File checkpointing~~ ([#57](https://github.com/Cybourgeoisie/openrouter-agent-coder/issues/57))                     | ~~12h~~ | ~~moderate~~         | ~~—~~      |
-| ~~4.7~~ | ~~Subagent system — basic, sequential~~ ([#88](https://github.com/Cybourgeoisie/openrouter-agent-coder/pull/88))      | ~~15h~~ | ~~moderate~~         | ~~—~~      |
-| ~~4.8~~ | ~~Subagent tool / model / effort overrides~~ ([#89](https://github.com/Cybourgeoisie/openrouter-agent-coder/pull/89)) | ~~5h~~  | ~~moderate~~         | ~~4.7~~    |
-| ~~4.9~~ | ~~Parallel subagent execution~~ ([✅ #90](https://github.com/Cybourgeoisie/openrouter-agent-coder/pull/90))           | ~~7h~~  | ~~moderate~~         | ~~4.7~~    |
+| ~~4.1~~ | ~~AskUserQuestion tool~~ ([#52](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/52))                   | ~~4h~~  | ~~host-UI contract~~ | ~~—~~      |
+| ~~4.2~~ | ~~TaskCreate / TaskUpdate tools~~ ([#53](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/53))          | ~~8h~~  | ~~host-UI contract~~ | ~~—~~      |
+| ~~4.3~~ | ~~NotebookEdit tool~~ ([#54](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/54))                      | ~~10h~~ | ~~low~~              | ~~—~~      |
+| ~~4.4~~ | ~~Monitor tool (background-script watch)~~ ([#55](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/55)) | ~~10h~~ | ~~low~~              | ~~—~~      |
+| ~~4.5~~ | ~~Session forking~~ ([#56](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/56))                        | ~~8h~~  | ~~low~~              | ~~—~~      |
+| ~~4.6~~ | ~~File checkpointing~~ ([#57](https://github.com/WolpertingerLabs/openrouter-agent-harness/issues/57))                     | ~~12h~~ | ~~moderate~~         | ~~—~~      |
+| ~~4.7~~ | ~~Subagent system — basic, sequential~~ ([#88](https://github.com/WolpertingerLabs/openrouter-agent-harness/pull/88))      | ~~15h~~ | ~~moderate~~         | ~~—~~      |
+| ~~4.8~~ | ~~Subagent tool / model / effort overrides~~ ([#89](https://github.com/WolpertingerLabs/openrouter-agent-harness/pull/89)) | ~~5h~~  | ~~moderate~~         | ~~4.7~~    |
+| ~~4.9~~ | ~~Parallel subagent execution~~ ([✅ #90](https://github.com/WolpertingerLabs/openrouter-agent-harness/pull/90))           | ~~7h~~  | ~~moderate~~         | ~~4.7~~    |
 
 **Phase 4 total:** ~70h (estimate; 4.7 is the largest single card and most likely to slip).
 

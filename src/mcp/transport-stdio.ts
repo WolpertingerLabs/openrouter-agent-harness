@@ -26,7 +26,7 @@ import type {
 
 import type { McpStdioClientOptions } from './spec.js';
 
-const CLIENT_NAME = 'openrouter-agent-coder';
+const CLIENT_NAME = 'openrouter-agent-harness';
 const CLIENT_VERSION = '0.2.0';
 
 /**

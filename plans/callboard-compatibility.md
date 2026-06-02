@@ -1,6 +1,6 @@
 # Plan: Callboard Compatibility
 
-Make openrouter-agent-coder consumable by [callboard](https://github.com/WolpertingerLabs/callboard) as a third `AgentProvider` + `SessionProvider`, alongside the in-tree `claude-code` adapter and the planned `codex` adapter.
+Make openrouter-agent-harness consumable by [callboard](https://github.com/WolpertingerLabs/callboard) as a third `AgentProvider` + `SessionProvider`, alongside the in-tree `claude-code` adapter and the planned `codex` adapter.
 
 Status: **Phase 0 + Phase 1 complete (18 PRs merged, through Phase 1.15 on 2026-05-22).** Phase 2 (callboard adapter, ~40h) deferred — lands separately in the callboard repo whenever the integration becomes a priority. See the [Implementation Order](#implementation-order) section below for the per-card breakdown and final coverage numbers.
 
@@ -93,7 +93,7 @@ Key invariants for the new `src/agent.ts`:
 - **No `process.exit`.** Errors thrown / emitted as `result { status: "error" }` events.
 - **No display formatting.** The `truncate` / `callSnippet` / `resultSnippet` / `⚙` / `↳` / turn-banner logic in `agent.ts:112-265` is deleted outright. Consumers get raw `tool_use` / `tool_result` events and render however they want.
 
-`package.json` exports a single library entry. Drop `bin` field. Drop `OR/Agent Coder` hardcoded `appTitle` from the OR client constructor — accept it as a constructor option instead, default to `"openrouter-agent-coder"`.
+`package.json` exports a single library entry. Drop `bin` field. Drop `OR/Agent Harness` hardcoded `appTitle` from the OR client constructor — accept it as a constructor option instead, default to `"openrouter-agent-harness"`.
 
 ### 2. AgentProvider implementation
 
@@ -240,7 +240,7 @@ The current `logs/<session>/...` tree maps cleanly onto callboard's `SessionProv
 Two changes needed in this repo to make the above work:
 
 1. **Capture `folder` / `cwd` per session.** `logs/<id>/session.json` currently doesn't store the working directory. Add it (write at session creation in `logger.ts`). Without this, `discoverSessions` can't populate `folder` / `displayFolder`.
-2. **Log root path configurability.** Today `logs/` is relative to CWD. Adapter needs to point this at a known absolute path (e.g. `~/.openrouter-agent-coder/logs/`) so the SessionProvider can scan it. Add `logsRoot` to core constructor options.
+2. **Log root path configurability.** Today `logs/` is relative to CWD. Adapter needs to point this at a known absolute path (e.g. `~/.openrouter-agent-harness/logs/`) so the SessionProvider can scan it. Add `logsRoot` to core constructor options.
 
 `ParsedMessage` translation is the meat — mirror codex-adapter's mapping:
 
@@ -375,10 +375,10 @@ Lands separately, in callboard, whenever the integration becomes a priority. Not
 
 ## Open Questions
 
-- **Packaging.** This repo is library-only — but does callboard `npm install openrouter-agent-coder` from a registry, vendor the source into `backend/`, or git-submodule it? Cleanest is a real npm publish (private registry or public Apache-2.0 like the upstream OR SDK), but vendoring is faster for the first integration cycle. Decide before Step 12.
+- **Packaging.** This repo is library-only — but does callboard `npm install openrouter-agent-harness` from a registry, vendor the source into `backend/`, or git-submodule it? Cleanest is a real npm publish (private registry or public Apache-2.0 like the upstream OR SDK), but vendoring is faster for the first integration cycle. Decide before Step 12.
 - **Compaction.** Callboard doesn't currently rely on `compaction_boundary` for anything load-bearing (it's emitted but consumers mostly pass it through to the UI). Confirm; if used for transcript archiving, we'll need a synthetic boundary signal from OR's `previousResponseId` rollover, which OR doesn't expose today.
 - **Streaming input.** Callboard's `query()` accepts `prompt: string | AsyncIterable<unknown>` per the port. Today this repo only sends one user message per `runPrompt()`. If callboard ever passes an async-iterable, we need to drain it and concat or split into multiple turns. Defer until callboard actually exercises it (it doesn't today per the abstraction-layer audit).
-- **`logsRoot` default.** `~/.openrouter-agent-coder/logs/` is the obvious choice (mirrors `~/.claude/projects/`, `~/.codex/sessions/`). Confirm; possibly `~/.config/openrouter-agent-coder/logs/` on XDG-compliant systems.
+- **`logsRoot` default.** `~/.openrouter-agent-harness/logs/` is the obvious choice (mirrors `~/.claude/projects/`, `~/.codex/sessions/`). Confirm; possibly `~/.config/openrouter-agent-harness/logs/` on XDG-compliant systems.
 
 ---
 

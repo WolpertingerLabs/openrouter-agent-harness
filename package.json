@@ -1,5 +1,5 @@
 {
-  "name": "@cybourgeoisie/openrouter-agent-coder",
+  "name": "@wolpertingerlabs/openrouter-agent-harness",
   "version": "0.2.0",
   "publishConfig": {
     "access": "public"
@@ -18,12 +18,12 @@
   "author": "Cybourgeoisie",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Cybourgeoisie/openrouter-agent-coder.git"
+    "url": "git+https://github.com/WolpertingerLabs/openrouter-agent-harness.git"
   },
   "bugs": {
-    "url": "https://github.com/Cybourgeoisie/openrouter-agent-coder/issues"
+    "url": "https://github.com/WolpertingerLabs/openrouter-agent-harness/issues"
   },
-  "homepage": "https://github.com/Cybourgeoisie/openrouter-agent-coder#readme",
+  "homepage": "https://github.com/WolpertingerLabs/openrouter-agent-harness#readme",
   "keywords": [
     "openrouter",
     "agent",
