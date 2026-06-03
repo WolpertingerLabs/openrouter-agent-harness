@@ -61,7 +61,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openrouter/agent": "^0.3.2",
+    "@openrouter/agent": "^0.7.1",
     "@openrouter/sdk": "^0.12.79",
     "zod": "^4.0.0"
   },

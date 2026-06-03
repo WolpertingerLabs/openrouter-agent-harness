@@ -5,6 +5,7 @@ import {
   isTurnStartEvent,
   isTurnEndEvent,
   isToolCallOutputEvent,
+  isClientTool,
   type Tool,
   type StateAccessor,
   type ConversationState,
@@ -1516,7 +1517,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         const toolNames = config.toolNames;
         const childTools =
           toolNames !== undefined
-            ? childAllTools.filter((t) => toolNames.includes(t.function.name))
+            ? childAllTools.filter((t) => isClientTool(t) && toolNames.includes(t.function.name))
             : childAllTools;
         // Phase 4.8: per-subagent overrides REPLACE the parent's resolved
         // value (instead of composing). The parent's `permissionMode` /
@@ -1742,7 +1743,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
                   // are derived from the same bridge entries). The `find`
                   // therefore never returns undefined in practice; the
                   // non-null assertion documents that invariant.
-                  const found = bridgeTools.find((t) => t.function.name === name)!;
+                  const found = bridgeTools.find((t) => isClientTool(t) && t.function.name === name)!;
                   loadedToolNames.add(name);
                   toolsForRun.push(wrapTool(found));
                   await safeFireHook('Notification', {
@@ -2332,6 +2333,8 @@ interface DeriveCompletionInput {
  * `JSON.parse(toolResult.output)` and check `denied === true`.
  */
 function wrapToolWithPermission(t: Tool, canUseTool: CanUseTool): Tool {
+  // Server tools run on OpenRouter — no client-side execute to gate. Pass through.
+  if (!isClientTool(t)) return t;
   const fn = t.function as { name: string; execute?: (i: unknown, c?: unknown) => unknown };
   const name = fn.name;
   const originalExecute = fn.execute;
@@ -2407,6 +2410,8 @@ function wrapToolWithHooks(
   safeFireHook: (event: HookEvent, payload: HookPayload) => Promise<unknown>,
   logger?: AgentLogger,
 ): Tool {
+  // Server tools run on OpenRouter — no client-side execute to wrap. Pass through.
+  if (!isClientTool(t)) return t;
   const fn = t.function as { name: string; execute?: (i: unknown, c?: unknown) => unknown };
   const name = fn.name;
   const originalExecute = fn.execute;

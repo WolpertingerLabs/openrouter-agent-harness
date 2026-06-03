@@ -1,4 +1,4 @@
-import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isToolCallOutputEvent, } from '@openrouter/agent';
+import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isToolCallOutputEvent, isClientTool, } from '@openrouter/agent';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { COMPACTION_PROMPT, DEFAULT_KEEP_RECENT_TURNS, estimateMessagesCharLength, partitionMessages, resolveCompactionThresholdChars, } from './compaction.js';
@@ -782,7 +782,7 @@ export class OpenRouterAgentRun {
                 });
                 const toolNames = config.toolNames;
                 const childTools = toolNames !== undefined
-                    ? childAllTools.filter((t) => toolNames.includes(t.function.name))
+                    ? childAllTools.filter((t) => isClientTool(t) && toolNames.includes(t.function.name))
                     : childAllTools;
                 // Phase 4.8: per-subagent overrides REPLACE the parent's resolved
                 // value (instead of composing). The parent's `permissionMode` /
@@ -1004,7 +1004,7 @@ export class OpenRouterAgentRun {
                                 // are derived from the same bridge entries). The `find`
                                 // therefore never returns undefined in practice; the
                                 // non-null assertion documents that invariant.
-                                const found = bridgeTools.find((t) => t.function.name === name);
+                                const found = bridgeTools.find((t) => isClientTool(t) && t.function.name === name);
                                 loadedToolNames.add(name);
                                 toolsForRun.push(wrapTool(found));
                                 await safeFireHook('Notification', {
@@ -1570,6 +1570,9 @@ export class OpenRouterAgentRun {
  * `JSON.parse(toolResult.output)` and check `denied === true`.
  */
 function wrapToolWithPermission(t, canUseTool) {
+    // Server tools run on OpenRouter — no client-side execute to gate. Pass through.
+    if (!isClientTool(t))
+        return t;
     const fn = t.function;
     const name = fn.name;
     const originalExecute = fn.execute;
@@ -1642,6 +1645,9 @@ function wrapToolWithPermission(t, canUseTool) {
  * payloads of a single Pre/Post pair always share the same id.
  */
 function wrapToolWithHooks(t, safeFireHook, logger) {
+    // Server tools run on OpenRouter — no client-side execute to wrap. Pass through.
+    if (!isClientTool(t))
+        return t;
     const fn = t.function;
     const name = fn.name;
     const originalExecute = fn.execute;
