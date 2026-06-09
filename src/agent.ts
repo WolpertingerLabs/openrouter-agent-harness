@@ -1936,6 +1936,14 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         // flushes the open `AssistantMessage` before the next cycle.
         let lastTurnNumber = 0;
         let turnEndEmitted = false;
+        // Defense-in-depth: track whether the SDK emitted `response.completed`
+        // during this cycle. When the SSE stream closes cleanly without this
+        // event (e.g. an API error was swallowed by the SDK's internal error
+        // path when server-tools hooks are in play), the `for await` loop exits
+        // with no events and no throw — leaving the run in limbo. After the
+        // loop we detect this situation and surface a synthetic error so the
+        // consumer always sees `stream_complete{status:"error"}`.
+        let responseCompleted = false;
 
         try {
           for await (const event of result.getFullResponsesStream()) {
@@ -2017,6 +2025,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             // follow-ups, so single-shot runs would otherwise leave no
             // assistant record on disk.
             if ('type' in event && event.type === 'response.completed') {
+              responseCompleted = true;
               if (persistSession) {
                 const resp = (event as { response?: unknown }).response as {
                   model?: unknown;
@@ -2067,6 +2076,21 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
                 };
               }
               continue;
+            }
+          }
+          // Defense-in-depth: if the SSE stream closed without ever emitting
+          // `response.completed` AND we are not in an abort/interrupt path,
+          // the SDK may have silently swallowed an API error (most commonly
+          // a 4xx rejected by the afterError hook returning {error:null}).
+          // Calling `result.getResponse()` will throw the pending rejection
+          // that `ModelResult.executeToolsIfNeeded` stored internally, surfacing
+          // it here so the outer catch converts it to `error` + `stream_complete`.
+          if (!responseCompleted && !signal.aborted) {
+            try {
+              await result.getResponse();
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              throw new Error(msg, { cause: err });
             }
           }
         } finally {
