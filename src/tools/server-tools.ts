@@ -1,5 +1,5 @@
 import { SDKHooks } from '@openrouter/sdk/hooks/hooks';
-import type { BeforeCreateRequestContext } from '@openrouter/sdk/hooks/types';
+import type { AfterErrorContext, BeforeCreateRequestContext } from '@openrouter/sdk/hooks/types';
 
 export const SERVER_TOOLS = [
   { type: 'openrouter:datetime' as const },
@@ -29,5 +29,47 @@ export function createServerToolsHooks(): SDKHooks {
       }
     },
   });
+
+  hooks.registerAfterErrorHook({
+    async afterError(_ctx: AfterErrorContext, response: Response | null, error: unknown) {
+      // When an error object is already present, let the SDK use it as-is.
+      if (error) return { response, error };
+      // No error object means the SDK saw a non-2xx HTTP status but didn't
+      // convert it to a thrown error (the default SDKHooks.afterError path
+      // just returns { response, error: null } when no hooks are registered).
+      // Build a meaningful Error so the failure propagates through
+      // ModelResult.initStream() and surfaces in getFullResponsesStream().
+      const status = response?.status ?? 0;
+      let detail = response?.statusText ?? 'Unknown error';
+      try {
+        const rawBody = await response?.clone().text();
+        if (rawBody && rawBody.length > 0) {
+          // Try to extract a human-readable message from JSON first.
+          let extracted: string | undefined;
+          try {
+            const parsed = JSON.parse(rawBody) as unknown;
+            if (parsed && typeof parsed === 'object') {
+              const msg =
+                (parsed as { error?: { message?: unknown }; message?: unknown }).error?.message ??
+                (parsed as { message?: unknown }).message;
+              if (typeof msg === 'string' && msg.length > 0) {
+                extracted = msg;
+              }
+            }
+          } catch {
+            // Not valid JSON — fall through to use raw body text.
+          }
+          detail = extracted ?? rawBody;
+        }
+      } catch {
+        // Keep statusText as the detail if reading the response body fails.
+      }
+      return {
+        response,
+        error: new Error(`OpenRouter request failed (${status}): ${detail}`),
+      };
+    },
+  });
+
   return hooks;
 }

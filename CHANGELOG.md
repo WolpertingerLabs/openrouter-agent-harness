@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1] - 2025-07-15
+
+### Fixed
+
+- **Silent-hang when OR API returns a 4xx with server tools enabled.**
+  When `disableServerTools: false` (the default since callboard commit
+  `0880737`) and the OpenRouter API rejects the request with a non-2xx
+  HTTP status (e.g. a 402 "insufficient credits"), the agent run would
+  hang forever — yielding `session_started` and then nothing. No `error`
+  event, no `stream_complete`, and no logger output.
+
+  Root cause: the SDK's `_do` method calls `hooks.afterError(ctx, response,
+  null)` on non-2xx responses. When no `afterError` hook was registered (only
+  `beforeCreateRequest` was), the default `SDKHooks.afterError` returned
+  `{response, error: null}`, which did not throw and allowed the SDK to
+  continue with the 4xx response object. In certain `ModelResult` internal
+  code paths (specifically when the turn broadcaster completes without an
+  error and `getFullResponsesStream()` exits cleanly with no events) the
+  failure never surfaced as a throw into agent.ts's `for await` loop.
+
+  Two complementary fixes:
+
+  1. **`src/tools/server-tools.ts` — `afterError` hook**: `createServerToolsHooks()`
+     now also registers an `afterError` hook. When `error` is absent
+     (the SDK swallowed the HTTP error), the hook reads the response body,
+     extracts `error.message` / `message` from JSON (or uses the raw body
+     text / `statusText` as fallback), and returns
+     `{ response, error: new Error('OpenRouter request failed (${status}): ${detail}') }`.
+     This causes the SDK to throw the error, propagating it through
+     `ModelResult.initStream()` into `getFullResponsesStream()`.
+
+  2. **`src/agent.ts` — defense-in-depth in `iterate()`**: after the
+     `for await (const event of result.getFullResponsesStream())` loop
+     exits, if no `response.completed` event was ever observed AND the
+     signal is not aborted, the agent now calls `await result.getResponse()`
+     in a try/catch. Any rejection is re-thrown, which the outer catch
+     block converts to an `error` event + `stream_complete{status:"error",
+     reason}`. This catches any future SDK path that closes the SSE stream
+     without surfacing an error.
+
 ### Changed
 
 - Reclassified Skills system / Slash commands / Plugins from
