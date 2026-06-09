@@ -1220,7 +1220,7 @@ export class OpenRouterAgentRun {
                         }
                         if (isToolCallOutputEvent(event)) {
                             const out = event.output;
-                            const isError = out.status === 'incomplete';
+                            const isError = detectToolResultIsError(out);
                             yield {
                                 type: 'tool_result',
                                 callId: out.callId,
@@ -1564,10 +1564,14 @@ export class OpenRouterAgentRun {
  * Wrap a Tool's execute with a canUseTool permission check. The original
  * tool is shallow-cloned (preserving inputSchema, description, etc.) and only
  * `execute` is replaced. On `deny`, the wrapper throws an Error whose message
- * is `JSON.stringify({ error, denied: true })`, which the OR SDK turns into a
- * tool-call output with status `'incomplete'` (surfaced as `isError: true`).
+ * is `JSON.stringify({ error, denied: true })`. The OR SDK's
+ * `executeRegularTool` catches that throw and JSON-stringifies an outer
+ * `{"error": <thrown.message>}` envelope around it, emitting a normal
+ * `function_call_output` (NOT `status: 'incomplete'`). `detectToolResultIsError`
+ * inspects that envelope shape and surfaces the result with `isError: true`.
  * Consumers wanting to distinguish denial from generic failure can
- * `JSON.parse(toolResult.output)` and check `denied === true`.
+ * `JSON.parse(toolResult.output)` and (after a second parse of the inner
+ * `error` string) check `denied === true`.
  */
 function wrapToolWithPermission(t, canUseTool) {
     // Server tools run on OpenRouter — no client-side execute to gate. Pass through.
@@ -1800,6 +1804,48 @@ function extractResponseFailedMessage(event) {
     if (typeof reason === 'string' && reason.length > 0)
         return reason;
     return 'Response failed';
+}
+/**
+ * Decide whether a `tool.call_output` event represents a failed call. The OR
+ * SDK only sets `status: 'incomplete'` for a narrow class of failures (e.g.
+ * cancellation). Errors thrown from a tool's `execute()` are caught by
+ * `executeRegularTool`, JSON-stringified into an `{"error": <message>}`
+ * envelope, and emitted as a normal `function_call_output` with no `status`
+ * field — so `out.status === 'incomplete'` alone misses every thrown error.
+ *
+ * We additionally inspect the serialized output for two markers:
+ *
+ *  (a) the SDK catch-arm envelope `{"error":"..."}` (sole `error` key, string
+ *      value). `wrapToolWithPermission` and `wrapToolWithHooks` throw with a
+ *      `JSON.stringify({error, denied: true})` body, which the SDK then wraps
+ *      again as `{"error": <that JSON string>}` — both shapes match.
+ *  (b) a structured `isError: true` field on a tool-emitted object — tools
+ *      that resolve (rather than throw) can opt in to the failure signal by
+ *      setting this on their result. The production `bash` tool uses this to
+ *      surface non-zero exits, kill signals, and pre-spawn cancellation
+ *      without coupling to the SDK's catch-path behavior.
+ */
+function detectToolResultIsError(out) {
+    if (out.status === 'incomplete')
+        return true;
+    if (typeof out.output !== 'string')
+        return false;
+    let parsed;
+    try {
+        parsed = JSON.parse(out.output);
+    }
+    catch {
+        return false;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed))
+        return false;
+    const obj = parsed;
+    const keys = Object.keys(obj);
+    if (keys.length === 1 && keys[0] === 'error' && typeof obj.error === 'string')
+        return true;
+    if (obj.isError === true)
+        return true;
+    return false;
 }
 function extractAssistantContent(output) {
     let text = '';

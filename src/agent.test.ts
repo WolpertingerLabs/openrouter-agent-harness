@@ -200,6 +200,106 @@ describe('OpenRouterAgentRun event iteration', () => {
     });
   });
 
+  it('marks tool_result.isError true when output is the SDK catch-arm envelope {"error": "..."}', async () => {
+    callModelMock.mockImplementation(
+      fakeCallModel({
+        events: [
+          { type: 'turn.start', turnNumber: 0, timestamp: 1 },
+          {
+            type: 'tool.call_output',
+            timestamp: 1,
+            output: {
+              callId: 'env1',
+              type: 'function_call_output',
+              // The OR SDK's executeRegularTool catches a thrown Error and
+              // JSON-stringifies an outer {"error": <thrown.message>} envelope,
+              // emitting a normal function_call_output WITHOUT status:
+              // 'incomplete'. detectToolResultIsError flips isError on the
+              // envelope shape so thrown tool errors reach the model correctly.
+              output: '{"error":"old_string not found in foo.txt"}',
+            },
+          },
+          { type: 'turn.end', turnNumber: 0, timestamp: 2 },
+        ],
+      }),
+    );
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: TEST_SESSION,
+      prompt: 'edit fail',
+    });
+    const events = await collect(run);
+    const toolResult = events.find((e) => e.type === 'tool_result');
+    expect(toolResult).toMatchObject({ callId: 'env1', isError: true });
+  });
+
+  it('marks tool_result.isError true when output JSON carries explicit isError: true', async () => {
+    callModelMock.mockImplementation(
+      fakeCallModel({
+        events: [
+          { type: 'turn.start', turnNumber: 0, timestamp: 1 },
+          {
+            type: 'tool.call_output',
+            timestamp: 1,
+            output: {
+              callId: 'mark1',
+              type: 'function_call_output',
+              // bash resolves (does not throw) on non-zero exits / kill / timeout
+              // and sets isError:true on the structured result. agent.ts reads
+              // the field off the serialized output to surface the failure.
+              output:
+                '{"exitCode":1,"stdout":"","stderr":"boom","killSignal":"SIGTERM","isError":true}',
+            },
+          },
+          { type: 'turn.end', turnNumber: 0, timestamp: 2 },
+        ],
+      }),
+    );
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: TEST_SESSION,
+      prompt: 'bash fail',
+    });
+    const events = await collect(run);
+    const toolResult = events.find((e) => e.type === 'tool_result');
+    expect(toolResult).toMatchObject({ callId: 'mark1', isError: true });
+  });
+
+  it('does NOT flip isError for normal JSON outputs that happen to contain an `error` field alongside other keys', async () => {
+    callModelMock.mockImplementation(
+      fakeCallModel({
+        events: [
+          { type: 'turn.start', turnNumber: 0, timestamp: 1 },
+          {
+            type: 'tool.call_output',
+            timestamp: 1,
+            output: {
+              callId: 'ok1',
+              type: 'function_call_output',
+              // Tool legitimately returns multi-key JSON with an `error: null`
+              // field as part of its normal success shape — must NOT trip the
+              // SDK-catch-envelope detector (which only matches a sole `error`
+              // string key).
+              output: '{"error":null,"data":{"ok":true}}',
+            },
+          },
+          { type: 'turn.end', turnNumber: 0, timestamp: 2 },
+        ],
+      }),
+    );
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+    });
+    const events = await collect(run);
+    const toolResult = events.find((e) => e.type === 'tool_result');
+    expect(toolResult).toMatchObject({ callId: 'ok1', isError: false });
+  });
+
   it('marks tool_result.isError true when output status is incomplete', async () => {
     callModelMock.mockImplementation(
       fakeCallModel({

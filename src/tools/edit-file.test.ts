@@ -18,7 +18,8 @@ const execute = tool.function.execute as (params: {
   path: string;
   old_string: string;
   new_string: string;
-}) => Promise<{ path: string; replaced: boolean }>;
+  replace_all?: boolean;
+}) => Promise<{ path: string; replaced: boolean; replacedCount: number }>;
 
 describe('edit_file tool', () => {
   it('has correct name', () => {
@@ -36,8 +37,56 @@ describe('edit_file tool', () => {
     });
 
     expect(result.replaced).toBe(true);
+    expect(result.replacedCount).toBe(1);
     const content = await readFile(filePath, 'utf-8');
     expect(content).toBe('goodbye world');
+  });
+
+  it('replaces every occurrence when replace_all is true', async () => {
+    const filePath = join(TMP, 'replace-all.txt');
+    await writeFile(filePath, 'aaa bbb aaa bbb aaa', 'utf-8');
+
+    const result = await execute({
+      path: filePath,
+      old_string: 'aaa',
+      new_string: 'XXX',
+      replace_all: true,
+    });
+
+    expect(result.replaced).toBe(true);
+    expect(result.replacedCount).toBe(3);
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('XXX bbb XXX bbb XXX');
+  });
+
+  it('replace_all still throws when old_string does not appear at all', async () => {
+    const filePath = join(TMP, 'replace-all-missing.txt');
+    await writeFile(filePath, 'hello world', 'utf-8');
+
+    await expect(
+      execute({
+        path: filePath,
+        old_string: 'missing',
+        new_string: 'x',
+        replace_all: true,
+      }),
+    ).rejects.toThrow('old_string not found');
+  });
+
+  it('replace_all bypasses the uniqueness check (single-occurrence still works)', async () => {
+    const filePath = join(TMP, 'replace-all-single.txt');
+    await writeFile(filePath, 'foo bar baz', 'utf-8');
+
+    const result = await execute({
+      path: filePath,
+      old_string: 'bar',
+      new_string: 'BAR',
+      replace_all: true,
+    });
+
+    expect(result.replacedCount).toBe(1);
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('foo BAR baz');
   });
 
   it('throws when old_string is not found', async () => {
@@ -55,6 +104,14 @@ describe('edit_file tool', () => {
 
     await expect(execute({ path: filePath, old_string: 'aaa', new_string: 'ccc' })).rejects.toThrow(
       'found 2 times',
+    );
+  });
+
+  it('throws message includes the replace_all hint when uniqueness check trips', async () => {
+    const filePath = join(TMP, 'hint.txt');
+    await writeFile(filePath, 'aa bb aa cc aa', 'utf-8');
+    await expect(execute({ path: filePath, old_string: 'aa', new_string: 'ZZ' })).rejects.toThrow(
+      /replace_all: true/,
     );
   });
 
