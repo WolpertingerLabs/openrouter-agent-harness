@@ -88,9 +88,9 @@ function makeEchoTool(): Tool {
   });
 }
 
-function makeRunCommandTool(): Tool {
+function makeBashTool(): Tool {
   return tool({
-    name: 'run_command',
+    name: 'bash',
     description:
       'Runs a shell command and returns its output. Use exactly once when asked, then stop.',
     inputSchema: z.object({
@@ -102,7 +102,7 @@ function makeRunCommandTool(): Tool {
 
 const TOOL_REGISTRY: Record<string, () => Tool> = {
   echo: makeEchoTool,
-  run_command: makeRunCommandTool,
+  bash: makeBashTool,
 };
 
 function buildTools(names: readonly string[]): Tool[] {

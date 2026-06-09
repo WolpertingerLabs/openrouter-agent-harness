@@ -18,11 +18,11 @@
  * accidentally triggering further substitution (Claude Code parity).
  *
  * Shell execution uses {@link node:child_process.spawn} directly (NOT routed
- * through the `run_command` tool); it respects:
+ * through the `bash` tool); it respects:
  *
  * - {@link SubstitutionContext.signal} — aborting the run kills the child via
  *   SIGTERM, then SIGKILL after a 250ms grace window (parity with
- *   `run-command.ts`).
+ *   `bash.ts`).
  * - {@link SubstitutionContext.timeoutMs} — defaults to {@link DEFAULT_SHELL_TIMEOUT_MS}
  *   (60s); per-block override is not yet exposed in the frontmatter.
  * - {@link SubstitutionContext.disableShellExecution} — when `true`, replaces
@@ -36,7 +36,7 @@ import type { EffortLevel } from '../agent.js';
 /** Default per-block shell timeout. Mirrors Claude Code's documented default. */
 export const DEFAULT_SHELL_TIMEOUT_MS = 60_000;
 
-/** SIGTERM → SIGKILL grace window. Matches `run-command.ts`. */
+/** SIGTERM → SIGKILL grace window. Matches `bash.ts`. */
 const KILL_GRACE_MS = 250;
 
 /** Literal substituted for `` !`cmd` `` blocks when policy disables shell exec. */
@@ -267,7 +267,7 @@ async function substituteShell(body: string, ctx: SubstitutionContext): Promise<
  * but appended to the result on a non-zero exit, so the model can see why the
  * command failed without the run blowing up).
  *
- * Direct `spawn` (not the `run_command` tool) — `run-command` is bounded to
+ * Direct `spawn` (not the `bash` tool) — `bash` is bounded to
  * tool-call accounting and would surface the call as a separate tool result in
  * the SDK stream. Inline substitution is host-internal: the command output
  * folds into the rendered body BEFORE the model sees it.

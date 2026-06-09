@@ -19,8 +19,17 @@ describe('compileRule', () => {
 
     it('accepts the Claude-SDK-style alias and normalizes to the canonical name', () => {
       const rule = compileRule('Bash');
-      expect(rule.toolName).toBe('run_command');
+      expect(rule.toolName).toBe('bash');
       expect(rule.matches({ command: 'anything' })).toBe(true);
+    });
+
+    it('accepts the legacy run_command spelling as an alias for bash', () => {
+      const plain = compileRule('run_command');
+      expect(plain.toolName).toBe('bash');
+      const scoped = compileRule('run_command(npm *)');
+      expect(scoped.toolName).toBe('bash');
+      expect(scoped.matches({ command: 'npm install' })).toBe(true);
+      expect(scoped.matches({ command: 'pnpm install' })).toBe(false);
     });
 
     it('trims surrounding whitespace before lookup', () => {
@@ -62,8 +71,8 @@ describe('compileRule', () => {
   describe('Bash(<command pattern>)', () => {
     const rule = compileRule('Bash(npm *)');
 
-    it('targets the run_command tool', () => {
-      expect(rule.toolName).toBe('run_command');
+    it('targets the bash tool', () => {
+      expect(rule.toolName).toBe('bash');
     });
 
     it('matches commands prefixed with the pattern', () => {
@@ -142,13 +151,13 @@ describe('compileRule', () => {
 describe('buildToolFilterCanUseTool', () => {
   it('allows everything when both lists are empty and no mode gate is set', async () => {
     const gate = buildToolFilterCanUseTool({});
-    const result = await gate('run_command', { command: 'ls' }, TEST_CTX);
+    const result = await gate('bash', { command: 'ls' }, TEST_CTX);
     expect(result).toEqual({ behavior: 'allow' });
   });
 
   it('denies when a disallowedTools rule matches', async () => {
     const gate = buildToolFilterCanUseTool({ disallowedTools: ['Bash(rm *)'] });
-    const result = await gate('run_command', { command: 'rm -rf /' }, TEST_CTX);
+    const result = await gate('bash', { command: 'rm -rf /' }, TEST_CTX);
     expect(result.behavior).toBe('deny');
     if (result.behavior === 'deny') {
       expect(result.reason).toMatch(/disallowedTools/);
@@ -157,7 +166,7 @@ describe('buildToolFilterCanUseTool', () => {
 
   it('allows other commands when only a deny rule is set', async () => {
     const gate = buildToolFilterCanUseTool({ disallowedTools: ['Bash(rm *)'] });
-    const result = await gate('run_command', { command: 'ls' }, TEST_CTX);
+    const result = await gate('bash', { command: 'ls' }, TEST_CTX);
     expect(result.behavior).toBe('allow');
   });
 
@@ -166,7 +175,7 @@ describe('buildToolFilterCanUseTool', () => {
       allowedTools: ['Bash(rm *)'],
       disallowedTools: ['Bash(rm *)'],
     });
-    const result = await gate('run_command', { command: 'rm -rf /' }, TEST_CTX);
+    const result = await gate('bash', { command: 'rm -rf /' }, TEST_CTX);
     expect(result.behavior).toBe('deny');
   });
 
@@ -176,8 +185,8 @@ describe('buildToolFilterCanUseTool', () => {
       allowedTools: ['Bash(npm *)'],
       modeGate,
     });
-    const result = await gate('run_command', { command: 'ls' }, TEST_CTX);
-    expect(modeGate).toHaveBeenCalledWith('run_command', { command: 'ls' }, TEST_CTX);
+    const result = await gate('bash', { command: 'ls' }, TEST_CTX);
+    expect(modeGate).toHaveBeenCalledWith('bash', { command: 'ls' }, TEST_CTX);
     expect(result).toEqual({ behavior: 'deny', reason: 'mode-deny' });
   });
 
@@ -187,7 +196,7 @@ describe('buildToolFilterCanUseTool', () => {
       allowedTools: ['Bash(npm *)'],
       modeGate,
     });
-    const result = await gate('run_command', { command: 'npm install' }, TEST_CTX);
+    const result = await gate('bash', { command: 'npm install' }, TEST_CTX);
     expect(modeGate).not.toHaveBeenCalled();
     expect(result.behavior).toBe('allow');
   });

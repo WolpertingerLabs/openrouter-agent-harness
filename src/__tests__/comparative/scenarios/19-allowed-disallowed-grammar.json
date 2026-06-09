@@ -70,7 +70,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:73c85ab7a250306a9bdd29641416e05dffa1926ede5906c03389849e3dee1b60",
+      "promptHash": "sha256:45f73324f60e90fceebcd6512f652f8c1f928a5e4be62807f98cb778b9f740cf",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -78,11 +78,14 @@
         "model": "claude-sonnet-4-5-20250929",
         "status": "completed",
         "content": [
-          { "type": "text", "text": "Attempting to remove foo." },
+          {
+            "type": "text",
+            "text": "Attempting to remove foo."
+          },
           {
             "type": "tool_use",
             "callId": "call_rm_0",
-            "name": "run_command",
+            "name": "bash",
             "arguments": "{\"command\":\"rm -rf foo\"}"
           }
         ],
@@ -95,7 +98,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:7af628b6bd9e793ec5783b764798bd8fface671bdb1140ae3a10bed04fcde64e",
+      "promptHash": "sha256:30e3f685150a142f5ce31d4a2a732fbdb1b6702ed2214f77608c4acdf0478bb1",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -110,7 +113,7 @@
           {
             "type": "tool_use",
             "callId": "call_npm_1",
-            "name": "run_command",
+            "name": "bash",
             "arguments": "{\"command\":\"npm install\"}"
           }
         ],
@@ -123,7 +126,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:2c6ea9f5b123586c8609c1757f378cc47a1c2730e7629b4267a08ee5154352b3",
+      "promptHash": "sha256:8f645b57bdbd704c3746759307b127e96b1caf7a19fd82086a783fbd3e747af7",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -151,7 +154,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:100a13adec0a6fe783e101128711163700fc5ed8e42e11e58ce8f77bae1fb1fb",
+      "promptHash": "sha256:42b8b5bfda73d742c18b2a76880fa37aed34159a297a488307b1e2ddc7094151",
       "turn": 0,
       "kind": "success",
       "response": {

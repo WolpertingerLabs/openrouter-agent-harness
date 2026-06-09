@@ -56,7 +56,7 @@
           "tools": [
             {
               "description": "Runs a shell command and returns its output. Use exactly once when asked, then stop.",
-              "name": "run_command",
+              "name": "bash",
               "parameters": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
@@ -66,7 +66,9 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": ["command"],
+                "required": [
+                  "command"
+                ],
                 "additionalProperties": false
               },
               "strict": null,
@@ -119,7 +121,7 @@
           "tools": [
             {
               "description": "Runs a shell command and returns its output. Use exactly once when asked, then stop.",
-              "name": "run_command",
+              "name": "bash",
               "parameters": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
@@ -129,7 +131,9 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": ["command"],
+                "required": [
+                  "command"
+                ],
                 "additionalProperties": false
               },
               "strict": null,
@@ -152,7 +156,7 @@
           "arguments": "",
           "callId": "toolu_bdrk_01UbZUHRcVzpPu1tBpiPMt7z",
           "id": "fc_tmp_q5c5dwey5cj",
-          "name": "run_command",
+          "name": "bash",
           "status": "in_progress",
           "type": "function_call"
         },
@@ -196,7 +200,7 @@
       "event": {
         "arguments": "{\"command\": \"ls\"}",
         "itemId": "fc_tmp_q5c5dwey5cj",
-        "name": "run_command",
+        "name": "bash",
         "outputIndex": 0,
         "sequenceNumber": 6,
         "type": "response.function_call_arguments.done"
@@ -209,7 +213,7 @@
           "arguments": "{\"command\": \"ls\"}",
           "callId": "toolu_bdrk_01UbZUHRcVzpPu1tBpiPMt7z",
           "id": "fc_tmp_q5c5dwey5cj",
-          "name": "run_command",
+          "name": "bash",
           "status": "completed",
           "type": "function_call"
         },
@@ -220,7 +224,7 @@
     },
     {
       "type": "tool_execute",
-      "toolName": "run_command",
+      "toolName": "bash",
       "input": {
         "command": "ls"
       },
@@ -248,7 +252,7 @@
               "arguments": "{\"command\": \"ls\"}",
               "callId": "toolu_bdrk_01UbZUHRcVzpPu1tBpiPMt7z",
               "id": "fc_tmp_q5c5dwey5cj",
-              "name": "run_command",
+              "name": "bash",
               "status": "completed",
               "type": "function_call"
             }
@@ -272,7 +276,7 @@
           "tools": [
             {
               "description": "Runs a shell command and returns its output. Use exactly once when asked, then stop.",
-              "name": "run_command",
+              "name": "bash",
               "parameters": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
@@ -282,7 +286,9 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": ["command"],
+                "required": [
+                  "command"
+                ],
                 "additionalProperties": false
               },
               "strict": null,
@@ -378,7 +384,7 @@
           "tools": [
             {
               "description": "Runs a shell command and returns its output. Use exactly once when asked, then stop.",
-              "name": "run_command",
+              "name": "bash",
               "parameters": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
@@ -388,7 +394,9 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": ["command"],
+                "required": [
+                  "command"
+                ],
                 "additionalProperties": false
               },
               "strict": null,
@@ -441,7 +449,7 @@
           "tools": [
             {
               "description": "Runs a shell command and returns its output. Use exactly once when asked, then stop.",
-              "name": "run_command",
+              "name": "bash",
               "parameters": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
@@ -451,7 +459,9 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": ["command"],
+                "required": [
+                  "command"
+                ],
                 "additionalProperties": false
               },
               "strict": null,
@@ -612,7 +622,7 @@
           "tools": [
             {
               "description": "Runs a shell command and returns its output. Use exactly once when asked, then stop.",
-              "name": "run_command",
+              "name": "bash",
               "parameters": {
                 "$schema": "http://json-schema.org/draft-07/schema#",
                 "type": "object",
@@ -622,7 +632,9 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": ["command"],
+                "required": [
+                  "command"
+                ],
                 "additionalProperties": false
               },
               "strict": null,
@@ -646,7 +658,7 @@
             "costDetails": {
               "upstreamInferenceCost": 0.000765,
               "upstreamInferenceInputCost": 0.000745,
-              "upstreamInferenceOutputCost": 0.00002
+              "upstreamInferenceOutputCost": 2e-05
             },
             "isByok": false
           }
@@ -684,7 +696,7 @@
       "costDetails": {
         "upstreamInferenceCost": 0.000765,
         "upstreamInferenceInputCost": 0.000745,
-        "upstreamInferenceOutputCost": 0.00002
+        "upstreamInferenceOutputCost": 2e-05
       },
       "isByok": false
     },

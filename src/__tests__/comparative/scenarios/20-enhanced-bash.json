@@ -1,6 +1,6 @@
 {
   "name": "20-enhanced-bash",
-  "description": "Phase 6.9 backfill #164: exercises the Enhanced Bash tool (Phase 3.9). The shared bilateral flow is intentionally minimal (1-turn no-tool, no harness tools registered) because the load-bearing surface here is the OR-side production `run_command` tool's spawn-and-supervise machinery (timeout → SIGTERM → 250ms grace → SIGKILL; clamp at MAX_TIMEOUT_MS=600_000 firing a `warn` notify). The Claude Agent SDK's built-in `Bash` tool has its own equivalent (timeout knob + SIGTERM-on-timeout), but its child-process is spawned inside the subprocess CLI and is structurally inaccessible from this harness — there is no way to observe its exit code / stderr suffix / kill-grace timing from the agent SDK's user-facing event stream (only the model-visible string output). Bilateral parity for the Phase 3.9 spawn machinery is therefore structurally impossible with the current harness shape (see PR body ambiguity call #1). The load-bearing assertions live in the companion OR-only supplemental driver in `scenarios.comparative.test.ts`, which constructs an inline OR run with the production `runCommandTool()` registered, scripts two `run_command` tool-use turns plus a closing text turn, and asserts: (a) `run_command({command:'sleep 5', timeout_ms:100, description:'list build artifacts'})` returns within a generous timing envelope (100ms timeout + 250ms SIGKILL grace + slow-CI jitter) with `exitCode === 1` and `stderr` containing the canonical `terminated by SIGTERM` or `terminated by SIGKILL` suffix from `run-command.ts:139-145`; (b) `run_command({command:':', timeout_ms:700000})` runs to completion (the clamp shortens the budget to MAX_TIMEOUT_MS, but `:` exits immediately so no SIGTERM fires) and the `Notification` hook receives the canonical `'run_command timeout_ms exceeds MAX_TIMEOUT_MS, clamping'` warn payload from `run-command.ts:54-57`. The `description` advisory is observed via the captured `tool_call.input.description` event projection on the OR side (the schema's free-text field round-trips from the model's scripted args through the canonical event stream); deeper propagation into a recorded per-request log artifact is `persistSession: false` here so out-of-scope, documented as ambiguity call #3 in the PR body. The issue body's claim that `RunCommandResult` carries `truncated: true` + `exitCode: null` on the kill path is INCORRECT against the actual production interface at `src/tools/run-command.ts:11-15` (`{exitCode: number, stdout: string, stderr: string}` — no truncated flag, never-null exitCode); the supplemental asserts the actually-observable shape and the PR body documents the spec mismatch as ambiguity call #2 with a TODO for a structural follow-up.",
+  "description": "Phase 6.9 backfill #164: exercises the Enhanced Bash tool (Phase 3.9). The shared bilateral flow is intentionally minimal (1-turn no-tool, no harness tools registered) because the load-bearing surface here is the OR-side production `bash` tool's spawn-and-supervise machinery (timeout → SIGTERM → 250ms grace → SIGKILL; clamp at MAX_TIMEOUT_MS=600_000 firing a `warn` notify). The Claude Agent SDK's built-in `Bash` tool has its own equivalent (timeout knob + SIGTERM-on-timeout), but its child-process is spawned inside the subprocess CLI and is structurally inaccessible from this harness — there is no way to observe its exit code / stderr suffix / kill-grace timing from the agent SDK's user-facing event stream (only the model-visible string output). Bilateral parity for the Phase 3.9 spawn machinery is therefore structurally impossible with the current harness shape (see PR body ambiguity call #1). The load-bearing assertions live in the companion OR-only supplemental driver in `scenarios.comparative.test.ts`, which constructs an inline OR run with the production `bashTool()` registered, scripts two `bash` tool-use turns plus a closing text turn, and asserts: (a) `bash({command:'sleep 5', timeout_ms:100, description:'list build artifacts'})` returns within a generous timing envelope (100ms timeout + 250ms SIGKILL grace + slow-CI jitter) with `exitCode === 1` and `stderr` containing the canonical `terminated by SIGTERM` or `terminated by SIGKILL` suffix from `bash.ts:139-145`; (b) `bash({command:':', timeout_ms:700000})` runs to completion (the clamp shortens the budget to MAX_TIMEOUT_MS, but `:` exits immediately so no SIGTERM fires) and the `Notification` hook receives the canonical `'bash timeout_ms exceeds MAX_TIMEOUT_MS, clamping'` warn payload from `bash.ts:54-57`. The `description` advisory is observed via the captured `tool_call.input.description` event projection on the OR side (the schema's free-text field round-trips from the model's scripted args through the canonical event stream); deeper propagation into a recorded per-request log artifact is `persistSession: false` here so out-of-scope, documented as ambiguity call #3 in the PR body. The issue body's claim that `BashResult` carries `truncated: true` + `exitCode: null` on the kill path is INCORRECT against the actual production interface at `src/tools/bash.ts:11-15` (`{exitCode: number, stdout: string, stderr: string}` — no truncated flag, never-null exitCode); the supplemental asserts the actually-observable shape and the PR body documents the spec mismatch as ambiguity call #2 with a TODO for a structural follow-up.",
   "prompt": "Confirm the enhanced bash tool is registered for this session.",
   "model": "claude-sonnet-4-5-20250929",
   "systemPrompt": "You are a helpful assistant. Answer concisely.",
@@ -70,7 +70,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:85264e0015ca27754591ef7b5a280c41e83f36b6b7260839e739c49be5d69c93",
+      "promptHash": "sha256:9cc8ab06b3612403d5641f641d51136cf1cd3b5105860444b00249cbe0fecfa7",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -80,12 +80,12 @@
         "content": [
           {
             "type": "text",
-            "text": "Listing build artifacts via run_command with a tight 100ms timeout."
+            "text": "Listing build artifacts via bash with a tight 100ms timeout."
           },
           {
             "type": "tool_use",
             "callId": "call_sleep_0",
-            "name": "run_command",
+            "name": "bash",
             "arguments": "{\"command\":\"sleep 5\",\"timeout_ms\":100,\"description\":\"list build artifacts\"}"
           }
         ],
@@ -98,7 +98,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:f7e5b436653fb1e5f89a284cdc9085eda21cf94c15e535c8b56f7cd830759d5d",
+      "promptHash": "sha256:0f85a314842e446881e6dcaf47510849828a703fed2ce0a113bef8bb24f5c6ac",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -113,7 +113,7 @@
           {
             "type": "tool_use",
             "callId": "call_clamp_1",
-            "name": "run_command",
+            "name": "bash",
             "arguments": "{\"command\":\":\",\"timeout_ms\":700000}"
           }
         ],
@@ -126,7 +126,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:bb5fc9e8a0d2f18512af7d7e67accc4d0c6f03ae83a4fa1946f84c06f538e077",
+      "promptHash": "sha256:a4ca0777649f71d43a1505cc5495fa2d3107556b3622b6ea048423b765433dd2",
       "turn": 0,
       "kind": "success",
       "response": {

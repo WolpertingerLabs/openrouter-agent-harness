@@ -433,16 +433,16 @@ describe('spawn_subagent tool — Phase 4.8 per-subagent overrides', () => {
     const { execute } = makeTool({ runSubagent: runner });
     await execute({
       description: 'x',
-      tools: ['run_command'],
-      allowed_tools: ['run_command(echo *)'],
+      tools: ['bash'],
+      allowed_tools: ['bash(echo *)'],
     });
     const config = (runner as unknown as { mock: { calls: SubagentRunConfig[][] } }).mock
       .calls[0][0];
-    // toolNames narrows the pool to run_command only; allowedTools layers
+    // toolNames narrows the pool to bash only; allowedTools layers
     // the scoped echo-only rule on top — both arrive intact at the runner so
     // the agent-side wiring can compose them at child-construction time.
-    expect(config.toolNames).toEqual(['run_command']);
-    expect(config.allowedTools).toEqual(['run_command(echo *)']);
+    expect(config.toolNames).toEqual(['bash']);
+    expect(config.allowedTools).toEqual(['bash(echo *)']);
   });
 
   it('forwards `effort` pass-through to the runner config (Phase 5.4 wires this into the child callModel)', async () => {

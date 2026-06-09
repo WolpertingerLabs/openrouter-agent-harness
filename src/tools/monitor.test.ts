@@ -92,7 +92,7 @@ describe('monitor tool', () => {
     // reaches sleep directly — without `exec` the shell would fork a
     // grandchild that holds stdout open, delaying the 'close' event for
     // the full 5-second sleep (same orphan-pipe quirk noted in
-    // run-command.test.ts).
+    // bash.test.ts).
     const start = Date.now();
     const r = asResult(await execute({ command: 'exec sleep 5', max_duration_ms: 100 }));
     const elapsed = Date.now() - start;

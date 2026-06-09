@@ -11,17 +11,19 @@ function isMcpPrefixedToolName(name) {
 }
 /**
  * Accepts both Claude-SDK-style friendly names (`Bash`, `Edit`, ...) and the
- * library's canonical tool names (`run_command`, `edit_file`, ...). Either form
- * resolves to a single canonical name used internally.
+ * library's canonical tool names (`bash`, `edit_file`, ...). Either form
+ * resolves to a single canonical name used internally. The legacy
+ * `run_command` spelling is still accepted as an alias for `bash`.
  */
 const TOOL_NAME_LOOKUP = {
-    Bash: 'run_command',
+    Bash: 'bash',
     Edit: 'edit_file',
     Write: 'write_file',
     Read: 'read_file',
     List: 'list_directory',
     Grep: 'grep_files',
-    run_command: 'run_command',
+    bash: 'bash',
+    run_command: 'bash',
     edit_file: 'edit_file',
     write_file: 'write_file',
     read_file: 'read_file',
@@ -34,7 +36,7 @@ const TOOL_NAME_LOOKUP = {
  * tool's input schema.
  */
 const ARG_KEY_BY_TOOL = {
-    run_command: 'command',
+    bash: 'command',
     edit_file: 'path',
     write_file: 'path',
     read_file: 'path',
@@ -112,7 +114,7 @@ export function compileRule(rule) {
     if (!argKey) {
         throw new Error(`Invalid tool filter rule "${rule}": tool "${canonical}" does not support scoped patterns.`);
     }
-    const regex = canonical === 'run_command' ? compileBashPattern(pattern) : compileGlobToRegex(pattern);
+    const regex = canonical === 'bash' ? compileBashPattern(pattern) : compileGlobToRegex(pattern);
     return {
         toolName: canonical,
         matches: (input) => {

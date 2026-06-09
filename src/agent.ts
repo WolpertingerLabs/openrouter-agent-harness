@@ -308,7 +308,7 @@ export interface OpenRouterAgentRunOptions {
   /**
    * External AbortSignal. When aborted, the run cancels the underlying OR
    * stream and propagates SIGTERM (then SIGKILL after a 250ms grace) to any
-   * child process spawned by `run_command`. Combined internally with the
+   * child process spawned by `bash`. Combined internally with the
    * `abort()` method via `AbortSignal.any`.
    */
   signal?: AbortSignal;

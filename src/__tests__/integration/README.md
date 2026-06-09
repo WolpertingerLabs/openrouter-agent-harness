@@ -84,7 +84,7 @@ The recorder will:
 
 - `prompt` (required) — the user message.
 - `tools` (optional, default `[]`) — names from the recorder's tool registry
-  in `scripts/record-fixture.ts`. Currently registered: `echo`, `run_command`.
+  in `scripts/record-fixture.ts`. Currently registered: `echo`, `bash`.
   Add more by editing the `TOOL_REGISTRY` constant.
 - `instructions` (optional) — system instructions.
 - `model` (optional) — overridden by `--model`.

@@ -3,7 +3,7 @@ import { readFileTool } from './read-file.js';
 import { writeFileTool } from './write-file.js';
 import { editFileTool } from './edit-file.js';
 import { listDirectoryTool } from './list-directory.js';
-import { runCommandTool } from './run-command.js';
+import { bashTool } from './bash.js';
 import { grepFilesTool } from './grep-files.js';
 import { globTool } from './glob.js';
 import { askUserQuestionTool, type AskUserQuestionToolOptions } from './ask-user-question.js';
@@ -29,7 +29,7 @@ export { readFileTool } from './read-file.js';
 export { writeFileTool } from './write-file.js';
 export { editFileTool } from './edit-file.js';
 export { listDirectoryTool } from './list-directory.js';
-export { runCommandTool } from './run-command.js';
+export { bashTool } from './bash.js';
 export { grepFilesTool } from './grep-files.js';
 export { globTool } from './glob.js';
 export { askUserQuestionTool } from './ask-user-question.js';
@@ -182,7 +182,7 @@ export interface AllToolsOptions {
 /**
  * Build the default set of client tools bound to a {@link ToolContext}. Each
  * tool factory checks `ctx.signal` on entry and resolves relative path inputs
- * against `ctx.cwd`. `run_command` additionally propagates SIGTERM (with a
+ * against `ctx.cwd`. `bash` additionally propagates SIGTERM (with a
  * 250ms SIGKILL grace) to its child process. `ask_user_question` requires
  * `opts.onAskUserQuestion` — without it the tool surfaces a
  * `no host handler registered` error from its result. `task_create` /
@@ -199,7 +199,7 @@ export function allTools(
     writeFileTool(ctx),
     editFileTool(ctx),
     listDirectoryTool(ctx),
-    runCommandTool(ctx),
+    bashTool(ctx),
     grepFilesTool(ctx),
     globTool(ctx),
     askUserQuestionTool(ctx, { onAskUserQuestion: opts.onAskUserQuestion }),
@@ -225,3 +225,4 @@ export function allTools(
   }
   return tools;
 }
+

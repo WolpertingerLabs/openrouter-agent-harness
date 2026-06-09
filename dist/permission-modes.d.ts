@@ -8,7 +8,7 @@ import type { CanUseTool } from './agent.js';
  * - `default` — read-only tools (`read_file`, `list_directory`, `grep_files`,
  *   `glob`) pass; everything else is denied with reason `'requires approval'`.
  * - `acceptEdits` — read-only + edit-style writers (`write_file`, `edit_file`)
- *   pass; `run_command` is denied with reason `'requires approval'`.
+ *   pass; `bash` is denied with reason `'requires approval'`.
  * - `bypassPermissions` — allow every tool. Equivalent to omitting the option.
  * - `plan` — strictly read-only; even edit-style writers are denied with
  *   reason `'plan mode: read-only — propose edits in your reply'`, signalling

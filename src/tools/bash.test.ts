@@ -1,15 +1,15 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runCommandTool, MAX_TIMEOUT_MS } from './run-command.js';
+import { bashTool, MAX_TIMEOUT_MS } from './bash.js';
 
-const tool = runCommandTool();
+const tool = bashTool();
 const execute = tool.function.execute as (params: {
   command: string;
   cwd?: string;
 }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
-describe('run_command tool', () => {
+describe('bash tool', () => {
   it('has correct name', () => {
-    expect(tool.function.name).toBe('run_command');
+    expect(tool.function.name).toBe('bash');
   });
 
   it('runs a command and returns stdout', async () => {
@@ -40,9 +40,9 @@ describe('run_command tool', () => {
     expect(result.stdout.trim()).toBe('3');
   });
 
-  it('appends "run_command cancelled" when aborted mid-execution', async () => {
+  it('appends "bash cancelled" when aborted mid-execution', async () => {
     const controller = new AbortController();
-    const cancelTool = runCommandTool({ cwd: '.', signal: controller.signal });
+    const cancelTool = bashTool({ cwd: '.', signal: controller.signal });
     const cancelExecute = cancelTool.function.execute as (params: {
       command: string;
     }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
@@ -51,8 +51,8 @@ describe('run_command tool', () => {
     const result = await cancelExecute({ command: "printf 'oops' >&2; sleep 5" });
 
     expect(result.exitCode).not.toBe(0);
-    expect(result.stderr).toContain('run_command cancelled');
-    expect(result.stderr).toMatch(/oops\nrun_command cancelled$/);
+    expect(result.stderr).toContain('bash cancelled');
+    expect(result.stderr).toMatch(/oops\nbash cancelled$/);
   });
 
   it('appends "terminated by SIGTERM" when the child is killed by a signal', async () => {
@@ -67,7 +67,7 @@ describe('run_command tool', () => {
   });
 
   it('emits stderr from the error handler when spawn fails', async () => {
-    const errTool = runCommandTool({ cwd: '/nonexistent-xyz-9999-claude-test' });
+    const errTool = bashTool({ cwd: '/nonexistent-xyz-9999-claude-test' });
     const errExecute = errTool.function.execute as (params: {
       command: string;
     }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
@@ -78,7 +78,7 @@ describe('run_command tool', () => {
 
   it('cancels with empty stderr (no suffix prepended)', async () => {
     const controller = new AbortController();
-    const cancelTool = runCommandTool({ cwd: '.', signal: controller.signal });
+    const cancelTool = bashTool({ cwd: '.', signal: controller.signal });
     const cancelExecute = cancelTool.function.execute as (params: {
       command: string;
     }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
@@ -86,7 +86,7 @@ describe('run_command tool', () => {
     setTimeout(() => controller.abort(), 50);
     const result = await cancelExecute({ command: 'sleep 5' });
 
-    expect(result.stderr).toBe('run_command cancelled');
+    expect(result.stderr).toBe('bash cancelled');
   });
 
   it('appends signal marker without extra newline when stderr already ends with one', async () => {
@@ -109,7 +109,7 @@ describe('run_command tool', () => {
     const result = await execute({ command: 'kill -HUP $$' });
     expect(result.exitCode).toBe(1);
     expect(result.stderr).not.toContain('terminated by');
-    expect(result.stderr).not.toContain('run_command cancelled');
+    expect(result.stderr).not.toContain('bash cancelled');
   });
 
   it('terminates a long-running command when timeout_ms elapses', async () => {
@@ -134,7 +134,7 @@ describe('run_command tool', () => {
 
   it('clamps timeout_ms over MAX_TIMEOUT_MS and emits a warn notification', async () => {
     const notify = vi.fn(async () => {});
-    const clampTool = runCommandTool({ cwd: '.', notify });
+    const clampTool = bashTool({ cwd: '.', notify });
     const clampExecute = clampTool.function.execute as (params: {
       command: string;
       timeout_ms?: number;
@@ -153,7 +153,7 @@ describe('run_command tool', () => {
 
   it('does NOT emit a warn notification when timeout_ms is at or below MAX_TIMEOUT_MS', async () => {
     const notify = vi.fn(async () => {});
-    const okTool = runCommandTool({ cwd: '.', notify });
+    const okTool = bashTool({ cwd: '.', notify });
     const okExecute = okTool.function.execute as (params: {
       command: string;
       timeout_ms?: number;
@@ -183,12 +183,12 @@ describe('run_command tool', () => {
   it('returns early when signal is already aborted before spawn', async () => {
     const controller = new AbortController();
     controller.abort();
-    const abortedTool = runCommandTool({ cwd: '.', signal: controller.signal });
+    const abortedTool = bashTool({ cwd: '.', signal: controller.signal });
     const abortedExecute = abortedTool.function.execute as (params: {
       command: string;
     }) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
     const result = await abortedExecute({ command: 'echo hi' });
     expect(result.exitCode).toBe(1);
-    expect(result.stderr).toBe('run_command cancelled before start');
+    expect(result.stderr).toBe('bash cancelled before start');
   });
 });

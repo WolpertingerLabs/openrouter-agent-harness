@@ -5,7 +5,7 @@ import {
   writeFileTool,
   editFileTool,
   listDirectoryTool,
-  runCommandTool,
+  bashTool,
   grepFilesTool,
   globTool,
   askUserQuestionTool,
@@ -28,7 +28,7 @@ describe('tools barrel', () => {
       'write_file',
       'edit_file',
       'list_directory',
-      'run_command',
+      'bash',
       'grep_files',
       'glob',
       'ask_user_question',
@@ -44,7 +44,7 @@ describe('tools barrel', () => {
     expect(writeFileTool().function.name).toBe('write_file');
     expect(editFileTool().function.name).toBe('edit_file');
     expect(listDirectoryTool().function.name).toBe('list_directory');
-    expect(runCommandTool().function.name).toBe('run_command');
+    expect(bashTool().function.name).toBe('bash');
     expect(grepFilesTool().function.name).toBe('grep_files');
     expect(globTool().function.name).toBe('glob');
     expect(askUserQuestionTool().function.name).toBe('ask_user_question');
@@ -79,7 +79,7 @@ describe('tools barrel', () => {
       ).execute;
       // Provide a benign-enough input; the abort check runs before any IO.
       const candidate = exec(
-        t.function.name === 'run_command'
+        t.function.name === 'bash'
           ? { command: 'true' }
           : t.function.name === 'monitor'
             ? { command: 'true' }
@@ -97,8 +97,8 @@ describe('tools barrel', () => {
                       ? { path: '.', pattern: 'x', file_glob: '*', case_sensitive: true }
                       : { path: 'nonexistent', old_string: 'a', new_string: 'b', content: '' },
       );
-      if (t.function.name === 'run_command') {
-        // run_command resolves with an error result rather than throwing.
+      if (t.function.name === 'bash') {
+        // bash resolves with an error result rather than throwing.
         await expect(candidate).resolves.toMatchObject({ exitCode: 1 });
       } else if (t.function.name === 'monitor') {
         // monitor resolves with a truncated empty buffer on the pre-aborted path.

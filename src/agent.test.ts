@@ -1307,10 +1307,10 @@ describe('OpenRouterAgentRun permissionMode', () => {
     expect(result.output).toBe('ok');
   });
 
-  it('allows all tools under bypassPermissions mode (including run_command)', async () => {
+  it('allows all tools under bypassPermissions mode (including bash)', async () => {
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-bypass',
         input: { command: 'ls' },
       }),
@@ -1320,7 +1320,7 @@ describe('OpenRouterAgentRun permissionMode', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeNamedTool('run_command')] as unknown as never,
+      tools: [makeNamedTool('bash')] as unknown as never,
       permissionMode: 'bypassPermissions',
     });
     const events = await collect(run);
@@ -1334,13 +1334,13 @@ describe('OpenRouterAgentRun permissionMode', () => {
   it('honors explicit canUseTool over permissionMode and emits a warn log mentioning both', async () => {
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-conflict',
         input: { command: 'ls' },
       }),
     );
     const logger = vi.fn();
-    // permissionMode:'default' would deny run_command. Explicit canUseTool
+    // permissionMode:'default' would deny bash. Explicit canUseTool
     // says allow — the explicit callback must win.
     const canUseTool = vi.fn().mockResolvedValue({ behavior: 'allow' });
 
@@ -1348,7 +1348,7 @@ describe('OpenRouterAgentRun permissionMode', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeNamedTool('run_command')] as unknown as never,
+      tools: [makeNamedTool('bash')] as unknown as never,
       permissionMode: 'default',
       canUseTool,
       logger,
@@ -1356,7 +1356,7 @@ describe('OpenRouterAgentRun permissionMode', () => {
     const events = await collect(run);
 
     expect(canUseTool).toHaveBeenCalledWith(
-      'run_command',
+      'bash',
       { command: 'ls' },
       expect.objectContaining({
         signal: expect.any(AbortSignal),
@@ -1380,7 +1380,7 @@ describe('OpenRouterAgentRun permissionMode', () => {
     const execSpy = vi.fn();
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-undef',
         input: { command: 'ls' },
       }),
@@ -1393,7 +1393,7 @@ describe('OpenRouterAgentRun permissionMode', () => {
         {
           type: 'function' as const,
           function: {
-            name: 'run_command',
+            name: 'bash',
             description: 'shell',
             execute: async (input: unknown) => {
               execSpy(input);
@@ -1455,12 +1455,12 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
     };
   }
 
-  function makeRunCommandTool(execSpy?: (input: unknown) => unknown) {
+  function makeBashTool(execSpy?: (input: unknown) => unknown) {
     return {
       type: 'function' as const,
       function: {
-        name: 'run_command',
-        description: 'stub run_command',
+        name: 'bash',
+        description: 'stub bash',
         execute: async (input: unknown) => {
           execSpy?.(input);
           return 'ran';
@@ -1469,11 +1469,11 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
     };
   }
 
-  it('allows a run_command call whose command matches allowedTools "Bash(echo *)"', async () => {
+  it('allows a bash call whose command matches allowedTools "Bash(echo *)"', async () => {
     const execSpy = vi.fn();
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-allow-echo',
         input: { command: 'echo hi' },
       }),
@@ -1483,7 +1483,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeRunCommandTool(execSpy)] as unknown as never,
+      tools: [makeBashTool(execSpy)] as unknown as never,
       allowedTools: ['Bash(echo *)'],
     });
     const events = await collect(run);
@@ -1497,11 +1497,11 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
     expect(result.output).toBe('ran');
   });
 
-  it('denies a run_command call when disallowedTools matches', async () => {
+  it('denies a bash call when disallowedTools matches', async () => {
     const execSpy = vi.fn();
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-deny-rm',
         input: { command: 'rm -rf /' },
       }),
@@ -1511,7 +1511,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeRunCommandTool(execSpy)] as unknown as never,
+      tools: [makeBashTool(execSpy)] as unknown as never,
       disallowedTools: ['Bash(rm *)'],
     });
     const events = await collect(run);
@@ -1530,7 +1530,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
   it('denies the call when both lists match (deny wins over allow)', async () => {
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-both',
         input: { command: 'rm -rf /' },
       }),
@@ -1540,7 +1540,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeRunCommandTool()] as unknown as never,
+      tools: [makeBashTool()] as unknown as never,
       allowedTools: ['Bash(rm *)'],
       disallowedTools: ['Bash(rm *)'],
     });
@@ -1556,7 +1556,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
     const execSpy = vi.fn();
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-mode-layer',
         input: { command: 'echo allowed' },
       }),
@@ -1566,7 +1566,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeRunCommandTool(execSpy)] as unknown as never,
+      tools: [makeBashTool(execSpy)] as unknown as never,
       permissionMode: 'default',
       allowedTools: ['Bash(echo *)'],
     });
@@ -1584,7 +1584,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
     const execSpy = vi.fn();
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-mode-fallthrough',
         input: { command: 'pnpm install' },
       }),
@@ -1594,7 +1594,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeRunCommandTool(execSpy)] as unknown as never,
+      tools: [makeBashTool(execSpy)] as unknown as never,
       permissionMode: 'default',
       allowedTools: ['Bash(echo *)'],
     });
@@ -1615,7 +1615,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
   it('explicit canUseTool wins over allowedTools/disallowedTools and emits the conflict warn log', async () => {
     callModelMock.mockImplementation(
       singleToolCallModel({
-        toolName: 'run_command',
+        toolName: 'bash',
         callId: 'c-explicit-wins',
         input: { command: 'rm -rf /' },
       }),
@@ -1629,7 +1629,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
       apiKey: 'k',
       sessionId: TEST_SESSION,
       prompt: 'p',
-      tools: [makeRunCommandTool()] as unknown as never,
+      tools: [makeBashTool()] as unknown as never,
       disallowedTools: ['Bash(rm *)'],
       canUseTool,
       logger,
@@ -1637,7 +1637,7 @@ describe('OpenRouterAgentRun allowedTools / disallowedTools', () => {
     const events = await collect(run);
 
     expect(canUseTool).toHaveBeenCalledWith(
-      'run_command',
+      'bash',
       { command: 'rm -rf /' },
       expect.objectContaining({
         signal: expect.any(AbortSignal),
@@ -1879,7 +1879,7 @@ describe('OpenRouterAgentRun cwd threading', () => {
     }
   });
 
-  it('threads cwd through run_command (child process spawns in ctx.cwd)', async () => {
+  it('threads cwd through bash (child process spawns in ctx.cwd)', async () => {
     const { mkdtemp, writeFile } = await import('node:fs/promises');
     const { tmpdir } = await import('node:os');
     const tmpRoot = await mkdtemp(join(tmpdir(), 'agent-cwd-run-'));
@@ -1892,7 +1892,7 @@ describe('OpenRouterAgentRun cwd threading', () => {
             function: { name: string; execute?: (i: unknown, c?: unknown) => unknown };
           }>;
         }) => {
-          const tool = request.tools.find((t) => t.function.name === 'run_command');
+          const tool = request.tools.find((t) => t.function.name === 'bash');
           return {
             async *getFullResponsesStream() {
               yield { type: 'turn.start', turnNumber: 0 };

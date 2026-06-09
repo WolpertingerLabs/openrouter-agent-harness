@@ -8,15 +8,15 @@ const TIMEOUT_MS = 30_000;
 export const MAX_TIMEOUT_MS = 600_000;
 const KILL_GRACE_MS = 250;
 
-export interface RunCommandResult {
+export interface BashResult {
   exitCode: number;
   stdout: string;
   stderr: string;
 }
 
-export function runCommandTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
+export function bashTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
   return tool({
-    name: 'run_command',
+    name: 'bash',
     description:
       'Execute a shell command and return stdout/stderr. Use for running tests, builds, git commands, etc. Commands time out after 30 seconds by default; pass timeout_ms (clamped at 10 minutes) to override.',
     inputSchema: z.object({
@@ -42,16 +42,16 @@ export function runCommandTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
         )
         .optional(),
     }),
-    execute: async ({ command, cwd: argCwd, timeout_ms }): Promise<RunCommandResult> => {
+    execute: async ({ command, cwd: argCwd, timeout_ms }): Promise<BashResult> => {
       if (ctx.signal?.aborted) {
-        return { exitCode: 1, stdout: '', stderr: 'run_command cancelled before start' };
+        return { exitCode: 1, stdout: '', stderr: 'bash cancelled before start' };
       }
 
       let effectiveTimeoutMs = timeout_ms ?? TIMEOUT_MS;
       if (effectiveTimeoutMs > MAX_TIMEOUT_MS) {
         const requestedMs = effectiveTimeoutMs;
         effectiveTimeoutMs = MAX_TIMEOUT_MS;
-        await ctx.notify?.('warn', 'run_command timeout_ms exceeds MAX_TIMEOUT_MS, clamping', {
+        await ctx.notify?.('warn', 'bash timeout_ms exceeds MAX_TIMEOUT_MS, clamping', {
           requestedMs,
           effectiveMs: effectiveTimeoutMs,
         });
@@ -59,7 +59,7 @@ export function runCommandTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
 
       const effectiveCwd = argCwd ? resolve(ctx.cwd, argCwd) : ctx.cwd;
 
-      return new Promise<RunCommandResult>((resolveResult) => {
+      return new Promise<BashResult>((resolveResult) => {
         const child = spawn('sh', ['-c', command], { cwd: effectiveCwd });
 
         let stdout = '';
@@ -115,7 +115,7 @@ export function runCommandTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
           stderr += text;
         });
 
-        const finish = (result: RunCommandResult): void => {
+        const finish = (result: BashResult): void => {
           clearTimeout(timeoutTimer);
           if (killTimer) clearTimeout(killTimer);
           if (ctx.signal) ctx.signal.removeEventListener('abort', onAbort);
@@ -132,7 +132,7 @@ export function runCommandTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
             finish({
               exitCode: code ?? 1,
               stdout,
-              stderr: stderr + suffix + 'run_command cancelled',
+              stderr: stderr + suffix + 'bash cancelled',
             });
             return;
           }

@@ -18,11 +18,11 @@
  * accidentally triggering further substitution (Claude Code parity).
  *
  * Shell execution uses {@link node:child_process.spawn} directly (NOT routed
- * through the `run_command` tool); it respects:
+ * through the `bash` tool); it respects:
  *
  * - {@link SubstitutionContext.signal} — aborting the run kills the child via
  *   SIGTERM, then SIGKILL after a 250ms grace window (parity with
- *   `run-command.ts`).
+ *   `bash.ts`).
  * - {@link SubstitutionContext.timeoutMs} — defaults to {@link DEFAULT_SHELL_TIMEOUT_MS}
  *   (60s); per-block override is not yet exposed in the frontmatter.
  * - {@link SubstitutionContext.disableShellExecution} — when `true`, replaces

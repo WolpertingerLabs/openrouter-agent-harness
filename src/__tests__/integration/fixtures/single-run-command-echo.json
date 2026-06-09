@@ -1,7 +1,14 @@
 {
   "name": "single-run-command-echo",
   "steps": [
-    { "type": "yield", "event": { "type": "turn.start", "turnNumber": 0, "timestamp": 1 } },
+    {
+      "type": "yield",
+      "event": {
+        "type": "turn.start",
+        "turnNumber": 0,
+        "timestamp": 1
+      }
+    },
     {
       "type": "yield",
       "event": {
@@ -11,23 +18,37 @@
         "item": {
           "type": "function_call",
           "callId": "call_echo",
-          "name": "run_command",
+          "name": "bash",
           "arguments": "{\"command\":\"echo hello\"}"
         }
       }
     },
     {
       "type": "tool_execute",
-      "toolName": "run_command",
-      "input": { "command": "echo hello" },
+      "toolName": "bash",
+      "input": {
+        "command": "echo hello"
+      },
       "callId": "call_echo"
     },
-    { "type": "yield", "event": { "type": "turn.end", "turnNumber": 0, "timestamp": 2 } }
+    {
+      "type": "yield",
+      "event": {
+        "type": "turn.end",
+        "turnNumber": 0,
+        "timestamp": 2
+      }
+    }
   ],
   "response": {
     "id": "resp-allowed-tools",
     "model": "mock-model",
-    "usage": { "cost": 0.001, "inputTokens": 5, "outputTokens": 2, "totalTokens": 7 },
+    "usage": {
+      "cost": 0.001,
+      "inputTokens": 5,
+      "outputTokens": 2,
+      "totalTokens": 7
+    },
     "output": []
   }
 }

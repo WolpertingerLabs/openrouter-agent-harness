@@ -467,16 +467,16 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect(preId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
-  it('synth-denies run_command with reason "requires approval" under permissionMode:"default"', async () => {
+  it('synth-denies bash with reason "requires approval" under permissionMode:"default"', async () => {
     state.fixture = loadFixture('single-run-command');
-    // Stub run_command tool — its execute should never be invoked because the
+    // Stub bash tool — its execute should never be invoked because the
     // mode-derived canUseTool denies before the wrapper reaches the handler.
     const execSpy = vi.fn(async () => 'should not run');
-    const runCommandStub = {
+    const bashStub = {
       type: 'function' as const,
       function: {
-        name: 'run_command',
-        description: 'stub run_command',
+        name: 'bash',
+        description: 'stub bash',
         parameters: { type: 'object', properties: { command: { type: 'string' } } },
         execute: execSpy,
       },
@@ -486,7 +486,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
       prompt: 'try to run a command',
-      tools: [runCommandStub] as unknown as ConstructorParameters<
+      tools: [bashStub] as unknown as ConstructorParameters<
         typeof OpenRouterAgentRun
       >[0]['tools'],
       permissionMode: 'default',
@@ -505,14 +505,14 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect(complete.status).toBe('success');
   });
 
-  it('allows run_command when allowedTools "Bash(echo *)" matches the invocation', async () => {
+  it('allows bash when allowedTools "Bash(echo *)" matches the invocation', async () => {
     state.fixture = loadFixture('single-run-command-echo');
     const execSpy = vi.fn(async () => 'ok');
-    const runCommandStub = {
+    const bashStub = {
       type: 'function' as const,
       function: {
-        name: 'run_command',
-        description: 'stub run_command',
+        name: 'bash',
+        description: 'stub bash',
         parameters: { type: 'object', properties: { command: { type: 'string' } } },
         execute: execSpy,
       },
@@ -522,7 +522,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
       prompt: 'echo something',
-      tools: [runCommandStub] as unknown as ConstructorParameters<
+      tools: [bashStub] as unknown as ConstructorParameters<
         typeof OpenRouterAgentRun
       >[0]['tools'],
       allowedTools: ['Bash(echo *)'],
@@ -538,14 +538,14 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect(toolResult.output).toBe('ok');
   });
 
-  it('denies run_command when allowedTools does not cover the invocation (no fallback gate)', async () => {
+  it('denies bash when allowedTools does not cover the invocation (no fallback gate)', async () => {
     state.fixture = loadFixture('single-run-command-echo');
     const execSpy = vi.fn(async () => 'should not run');
-    const runCommandStub = {
+    const bashStub = {
       type: 'function' as const,
       function: {
-        name: 'run_command',
-        description: 'stub run_command',
+        name: 'bash',
+        description: 'stub bash',
         parameters: { type: 'object', properties: { command: { type: 'string' } } },
         execute: execSpy,
       },
@@ -558,7 +558,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
       prompt: 'echo something',
-      tools: [runCommandStub] as unknown as ConstructorParameters<
+      tools: [bashStub] as unknown as ConstructorParameters<
         typeof OpenRouterAgentRun
       >[0]['tools'],
       disallowedTools: ['Bash(echo *)'],

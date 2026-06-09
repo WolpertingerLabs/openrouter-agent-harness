@@ -406,7 +406,7 @@ describe('comparative scenario: 18-persist-session-false — zero disk writes (O
 // The shared bilateral comparator-pass on scenario #19 is intentionally vacuous
 // (1-turn no-tool) because the harness uses MCP-bridge tools on both sides and
 // the scoped-rule grammar only applies to (a) canonical-name OR tools
-// (`run_command`, `edit_file`) on the OR side and (b) the Claude Agent SDK's
+// (`bash`, `edit_file`) on the OR side and (b) the Claude Agent SDK's
 // built-in tools (`Bash`, `Edit`) on the Anthropic side — never to MCP-bridge
 // tools. See the scenario JSON description + PR body ambiguity call #1 for the
 // full structural rationale.
@@ -445,9 +445,9 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
       emu.registry.register(entry as Parameters<typeof emu.registry.register>[0]);
     }
 
-    // Inline canonical-name tools. `run_command` and `edit_file` are the
+    // Inline canonical-name tools. `bash` and `edit_file` are the
     // canonical names in the OR rule grammar's `TOOL_NAME_LOOKUP`, so rules
-    // like `Bash(npm *)` (→ canonical `run_command`) and `Edit(src/**/*.ts)`
+    // like `Bash(npm *)` (→ canonical `bash`) and `Edit(src/**/*.ts)`
     // (→ canonical `edit_file`) match these tools. The `execute` return
     // values are canon — `npm install` (the one allowed call) returns 'ok',
     // and the model's text in the closing turn references it. The denied
@@ -455,7 +455,7 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
     // `wrapToolWithPermission` in agent.ts.
     const tools = [
       orTool({
-        name: 'run_command',
+        name: 'bash',
         description: 'Runs a shell command. Returns "ok" on success.',
         inputSchema: z.object({ command: z.string() }),
         execute: () => 'ok',
@@ -546,7 +546,7 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
 
     // ----- (a) Bash('rm -rf foo') — denied by `Bash(rm *)` ---------------
     const rmCall = callsByCommand['cmd:rm -rf foo'];
-    expect(rmCall, 'expected a tool_call for run_command rm -rf foo').toBeDefined();
+    expect(rmCall, 'expected a tool_call for bash rm -rf foo').toBeDefined();
     const rmResult = resultByCallId.get(rmCall.callId);
     expect(rmResult, 'expected a tool_result for the rm tool_call').toBeDefined();
     const rmOutput = String(rmResult!.output ?? '');
@@ -554,7 +554,7 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
 
     // ----- (b) Bash('npm install') — allowed by `Bash(npm *)` ------------
     const npmCall = callsByCommand['cmd:npm install'];
-    expect(npmCall, 'expected a tool_call for run_command npm install').toBeDefined();
+    expect(npmCall, 'expected a tool_call for bash npm install').toBeDefined();
     const npmResult = resultByCallId.get(npmCall.callId);
     expect(npmResult, 'expected a tool_result for the npm tool_call').toBeDefined();
     expect(npmResult!.isError).toBe(false);
@@ -574,7 +574,7 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
 //
 // The shared bilateral comparator-pass on scenario #20 is intentionally vacuous
 // (1-turn no-tool) because the load-bearing surface here is the OR-side
-// production `run_command` tool's spawn-and-supervise machinery (timeout →
+// production `bash` tool's spawn-and-supervise machinery (timeout →
 // SIGTERM → 250ms grace → SIGKILL; clamp at MAX_TIMEOUT_MS=600_000 firing a
 // `warn` notify). The Claude Agent SDK's built-in `Bash` tool runs inside the
 // subprocess CLI and is structurally inaccessible from this harness — only
@@ -583,27 +583,27 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
 // description + PR body ambiguity call #1 for the full structural rationale.
 //
 // This supplemental driver carries the load-bearing assertions. It constructs
-// an OR-only run inline with the production `runCommandTool()`, drives the
+// an OR-only run inline with the production `bashTool()`, drives the
 // scripted two-tool-call flow through an in-process emulator, captures
 // `Notification` hook events via the run's `onHook` knob, and asserts:
-//   (a) timeout: `run_command({command:'sleep 5', timeout_ms:100,
+//   (a) timeout: `bash({command:'sleep 5', timeout_ms:100,
 //       description:'list build artifacts'})` returns within a generous
 //       timing envelope with `exitCode === 1` and `stderr` containing the
 //       canonical `terminated by SIG{TERM,KILL}` suffix from
-//       run-command.ts:139-145.
-//   (b) clamp: `run_command({command:':', timeout_ms:700000})` runs to
+//       bash.ts:139-145.
+//   (b) clamp: `bash({command:':', timeout_ms:700000})` runs to
 //       completion (the clamp shortens to MAX_TIMEOUT_MS but `:` exits
 //       immediately, so no SIGTERM fires) and the `Notification` hook
-//       receives the canonical `'run_command timeout_ms exceeds
-//       MAX_TIMEOUT_MS, clamping'` warn payload from run-command.ts:54-57.
+//       receives the canonical `'bash timeout_ms exceeds
+//       MAX_TIMEOUT_MS, clamping'` warn payload from bash.ts:54-57.
 //
-// The issue body claims `RunCommandResult` carries `truncated: true` +
+// The issue body claims `BashResult` carries `truncated: true` +
 // `exitCode: null` on the kill path; the ACTUAL production interface at
-// run-command.ts:11-15 is `{exitCode: number, stdout: string, stderr: string}`
+// bash.ts:11-15 is `{exitCode: number, stdout: string, stderr: string}`
 // — no truncated flag, never-null exitCode (the close handler at
-// run-command.ts:142 resolves `exitCode: code ?? 1`, so it's `1` on signal
+// bash.ts:142 resolves `exitCode: code ?? 1`, so it's `1` on signal
 // kill, never null). We assert the actually-observable shape; the
-// issue-body spec mismatch + TODO for a structural `RunCommandResult`
+// issue-body spec mismatch + TODO for a structural `BashResult`
 // extension is documented as PR body ambiguity call #2.
 //
 // Timing envelope rationale: nominal kill time is 100ms timeout + up to
@@ -615,10 +615,10 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
 // AbortController instead).
 
 describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)', () => {
-  it('OR run_command honors timeout (SIGTERM → SIGKILL grace) and MAX_TIMEOUT_MS clamp warn-notify', async () => {
+  it('OR bash honors timeout (SIGTERM → SIGKILL grace) and MAX_TIMEOUT_MS clamp warn-notify', async () => {
     const { startEmulator } = await import('./emulator/index.js');
     const { OpenRouterAgentRun } = await import('../../agent.js');
-    const { runCommandTool } = await import('../../tools/run-command.js');
+    const { bashTool } = await import('../../tools/bash.js');
 
     const scenarioPath = join(SCENARIO_DIR, '20-enhanced-bash.json');
     const scenario = await loadScenario(scenarioPath);
@@ -632,16 +632,16 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
     // Capture every clamp `notify('warn', ...)` event the production tool
     // emits from inside its execute. The wiring is:
     //
-    //   - `run-command.ts:54-57` calls `ctx.notify?.('warn', ...)` from the
-    //     CLOSURE-captured `ToolContext` (the one passed to `runCommandTool(ctx)`
+    //   - `bash.ts:54-57` calls `ctx.notify?.('warn', ...)` from the
+    //     CLOSURE-captured `ToolContext` (the one passed to `bashTool(ctx)`
     //     at factory time), not the SDK-supplied runtime ToolExecuteContext.
     //   - `agent.ts:2224-2231` injects a `notify` onto the RUNTIME ctx (passed
     //     as the 2nd arg to execute) that reroutes through
-    //     `safeFireHook('Notification', ...)`. But the run_command factory
+    //     `safeFireHook('Notification', ...)`. But the bash factory
     //     reads from the closure ctx and ignores the runtime ctx — so the
     //     clamp notify does NOT reach the run's `onHook` in production
     //     through the canonical agent-internal-tools wiring (`allTools(ctx,
-    //     ...)` at `tools/index.ts:202` calls `runCommandTool(ctx)` with a
+    //     ...)` at `tools/index.ts:202` calls `bashTool(ctx)` with a
     //     ctx that has no `notify`, per `agent.ts:1349-1361`). The same
     //     pattern is used by `tools/monitor.ts:86,96`; `tools/tasks.ts:98-102`
     //     and `tools/ask-user-question.ts:99-102` correctly prefer
@@ -654,7 +654,7 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
     //
     // To make the clamp-warn assertion observable from this test, we pass
     // notify directly into the closure-captured ctx — the same pattern the
-    // production unit test at `tools/run-command.test.ts:137` uses. This
+    // production unit test at `tools/bash.test.ts:137` uses. This
     // exercises the tool's internal clamp-and-fire logic (the load-bearing
     // half of the parity claim); the missing-hook-bridge half is documented
     // separately. We also wire `onHook` so a future bridge-fix would
@@ -691,7 +691,7 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
         // carries `notify` so the clamp-warn fires (see note above for why
         // the production agent-wired path can't reach the Notification hook
         // for this tool today).
-        tools: [runCommandTool({ cwd: '.', notify: captureNotify })],
+        tools: [bashTool({ cwd: '.', notify: captureNotify })],
         model: scenario.model,
         instructions: scenario.systemPrompt,
         onHook,
@@ -722,7 +722,7 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
       const input = (c.input ?? {}) as Record<string, unknown>;
       return input.command === 'sleep 5';
     });
-    expect(sleepCall, 'expected a tool_call for run_command sleep 5').toBeDefined();
+    expect(sleepCall, 'expected a tool_call for bash sleep 5').toBeDefined();
 
     // description advisory round-trips through the model-emitted args into
     // the canonical tool_call.input event. The issue body's broader claim of
@@ -735,7 +735,7 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
 
     const sleepResult = resultByCallId.get(sleepCall!.callId);
     expect(sleepResult, 'expected a tool_result for the sleep tool_call').toBeDefined();
-    // The agent serializes `RunCommandResult` to a JSON string for the
+    // The agent serializes `BashResult` to a JSON string for the
     // `function_call_output` payload (so the model sees text, not a structured
     // object). Parse it back to a structured shape for the per-field
     // assertions below.
@@ -745,14 +745,14 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
       stderr?: unknown;
     };
     // Spec mismatch: the issue body claims `{truncated: true, exitCode: null}`
-    // but the actual production interface at run-command.ts:11-15 is
+    // but the actual production interface at bash.ts:11-15 is
     // `{exitCode: number, stdout: string, stderr: string}` — never null, no
     // truncated flag. Assert the actually-observable shape. See PR body
     // ambiguity call #2.
     expect(sleepOutput.exitCode).toBe(1);
     expect(typeof sleepOutput.stdout).toBe('string');
     expect(typeof sleepOutput.stderr).toBe('string');
-    // The close handler at run-command.ts:139-145 appends `terminated by
+    // The close handler at bash.ts:139-145 appends `terminated by
     // SIGTERM` or `terminated by SIGKILL` depending on which signal won the
     // race. On a 100ms timeout against `sleep 5`, SIGTERM almost always
     // wins (sleep responds to SIGTERM immediately); the SIGKILL branch
@@ -769,7 +769,7 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
       const input = (c.input ?? {}) as Record<string, unknown>;
       return input.command === ':';
     });
-    expect(clampCall, 'expected a tool_call for run_command :').toBeDefined();
+    expect(clampCall, 'expected a tool_call for bash :').toBeDefined();
     const clampInput = (clampCall!.input ?? {}) as Record<string, unknown>;
     expect(clampInput.timeout_ms).toBe(700000);
 
@@ -784,14 +784,14 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
     expect(clampOutput.exitCode).toBe(0);
 
     // The clamp warn-notify is the canon assertion for this sub-case. The
-    // production payload at run-command.ts:54-57 is `{requestedMs: 700000,
+    // production payload at bash.ts:54-57 is `{requestedMs: 700000,
     // effectiveMs: 600000}`; the agent's wrapToolWithHooks closure forwards
     // it verbatim into the Notification hook.
     const clampWarn = notifications.find(
       (n) =>
         n.level === 'warn' &&
         typeof n.message === 'string' &&
-        n.message === 'run_command timeout_ms exceeds MAX_TIMEOUT_MS, clamping',
+        n.message === 'bash timeout_ms exceeds MAX_TIMEOUT_MS, clamping',
     );
     expect(
       clampWarn,

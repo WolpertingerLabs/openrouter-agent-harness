@@ -116,7 +116,7 @@ export function monitorTool(ctx: ToolContext = DEFAULT_TOOL_CONTEXT) {
         let finished = false;
         let killTimer: NodeJS.Timeout | undefined;
 
-        // SIGTERM + 250ms SIGKILL grace, mirroring src/tools/run-command.ts.
+        // SIGTERM + 250ms SIGKILL grace, mirroring src/tools/bash.ts.
         const stop = (): void => {
           if (killed) return;
           killed = true;

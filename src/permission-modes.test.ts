@@ -12,7 +12,7 @@ const ALL_TOOLS = [
   'write_file',
   'edit_file',
   'list_directory',
-  'run_command',
+  'bash',
   'grep_files',
   'glob',
 ] as const;
@@ -30,19 +30,19 @@ const CASES: readonly ModeCase[] = [
   {
     mode: 'default',
     allowed: ['read_file', 'list_directory', 'grep_files', 'glob'],
-    denied: ['write_file', 'edit_file', 'run_command'],
+    denied: ['write_file', 'edit_file', 'bash'],
     denyReason: 'requires approval',
   },
   {
     mode: 'acceptEdits',
     allowed: ['read_file', 'list_directory', 'grep_files', 'glob', 'write_file', 'edit_file'],
-    denied: ['run_command'],
+    denied: ['bash'],
     denyReason: 'requires approval',
   },
   {
     mode: 'plan',
     allowed: ['read_file', 'list_directory', 'grep_files', 'glob'],
-    denied: ['write_file', 'edit_file', 'run_command'],
+    denied: ['write_file', 'edit_file', 'bash'],
     denyReason: PLAN_DENY_REASON,
   },
   {
