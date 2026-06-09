@@ -292,21 +292,6 @@ const comparatorConfigSchema = z
     // text comparison can never match for streaming mid-cancel even with
     // identical wire payloads.
     skipEventStreamCheck: z.boolean().optional(),
-    // Phase 6.5b: when true, the comparator treats `tool_result.isError` as
-    // a "best effort" signal — divergence on isError alone does not fail the
-    // event-payload check. Reason: the Anthropic MCP server wraps a thrown
-    // tool execute() into a tool_result with `is_error: true`, while the OR
-    // SDK's `executeRegularTool` catches the throw, stuffs the error message
-    // into the output JSON (`{"error":"..."}`) and emits a
-    // `function_call_output` with NO status field — so agent.ts (off-limits
-    // to this phase) sees `out.status === 'incomplete'` as false and yields
-    // a `tool_result` with `isError: false`. The model on both sides still
-    // receives the error string in the output, so the loop's resume-on-error
-    // semantics work; only the structural `isError` flag diverges. Scenario
-    // #7 uses this flag to assert the resume-on-error parity claim without
-    // failing on a known agent.ts gap. A real fix lives in agent.ts and is
-    // out of scope here.
-    tolerateToolResultIsError: z.boolean().optional(),
     // Phase 6.6: when true, the test driver's "if thrown, must look
     // abort-flavored" defensive regex check is SKIPPED. Used by the
     // failure-injection scenarios #13–#15 where the SDK may surface a

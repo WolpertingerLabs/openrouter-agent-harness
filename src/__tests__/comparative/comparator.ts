@@ -355,12 +355,7 @@ function eventsEqual(
     }
     case 'tool_result': {
       const bb = b as Extract<CanonicalEvent, { type: 'tool_result' }>;
-      // Phase 6.5b: `tolerateToolResultIsError` lets scenario #7 pass while
-      // a known agent.ts divergence (OR-side tool throws don't propagate
-      // isError) is still tracked in the PR body. See the schema's flag
-      // doc-comment for the full rationale; do NOT widen this to scenarios
-      // that don't exercise tool-error semantics.
-      if (a.isError !== bb.isError && config?.tolerateToolResultIsError !== true) {
+      if (a.isError !== bb.isError) {
         return {
           ok: false,
           kind: 'event_payload',

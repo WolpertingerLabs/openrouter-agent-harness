@@ -243,9 +243,10 @@ describe('comparative scenario: 07-tool-error-resume — hook order', () => {
     const scenarioPath = join(SCENARIO_DIR, '07-tool-error-resume.json');
     const { anthropicTranscript, orTranscript } = await runScenario(scenarioPath, 'emulated');
     const { canonicalizeAnthropic, canonicalizeOr } = await import('./canonicalize.js');
-    // Turn 0: tool_call(flakyFetch) → tool_result(isError=true on Anthropic,
-    // false on OR per known agent.ts gap documented on the comparator's
-    // `tolerateToolResultIsError` flag).
+    // Turn 0: tool_call(flakyFetch) → tool_result(isError=true on both —
+    // `detectToolResultIsError` in agent.ts inspects the SDK catch-arm
+    // `{"error":"..."}` envelope so OR-side thrown tool errors now surface
+    // with isError:true, matching Anthropic).
     // Turn 1: retry tool_call → tool_result(isError=false on both).
     // Turn 2: text summary → terminal:success.
     const expected = [
@@ -517,32 +518,15 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
       callsByCommand[key] = c;
     }
 
-    // The load-bearing assertion is on the tool_result CONTENT (the canon
-    // scoped-rule reason text from `buildToolFilterCanUseTool`), not on the
-    // structural `isError` flag. Empirically the OR SDK's `executeRegularTool`
-    // catches the synth-deny throw from `wrapToolWithPermission` and emits a
-    // `function_call_output` WITHOUT a status field, so agent.ts:1840 sees
-    // `out.status === 'incomplete'` as false and the resulting `tool_result`
-    // carries `isError: false` despite the canon agent.ts comment at
-    // src/agent.ts:2136 claiming `isError: true`. Same gap the comparator's
-    // `tolerateToolResultIsError` flag documents on scenario #07 — it
-    // applies to canUseTool denials as well, not only user-tool throws. A
-    // real fix lives in agent.ts and is out of scope here. The model on
-    // both sides still receives the JSON deny payload in the output and
-    // can adapt, so the rule-grammar contract (the reason text reaches the
-    // model) is intact; only the structural `isError` flag is wrong. The
-    // assertion below pins the content; the `isError` shape is documented
-    // here rather than asserted.
-    //
-    // The OR SDK additionally double-wraps the deny error: the OR side's
-    // `executeRegularTool` catch arm JSON-stringifies an outer
+    // The OR SDK's `executeRegularTool` catches the synth-deny throw from
+    // `wrapToolWithPermission` and JSON-stringifies an outer
     // `{"error": <thrown.message>}` envelope around the inner
-    // `{"error":"denied by disallowedTools","denied":true}` from
-    // `wrapToolWithPermission`. The escape-bytes survive intact, so a
-    // `toContain('denied by disallowedTools')` substring check sees the
-    // canon reason text verbatim — that is the parity claim this test
-    // makes. A literal `'"denied":true'` substring would fail against the
-    // outer-wrap escaping and is therefore NOT asserted.
+    // `{"error":"denied by disallowedTools","denied":true}`. The agent's
+    // `detectToolResultIsError` in agent.ts inspects that envelope shape and
+    // surfaces the result with `isError: true`, matching the Anthropic side.
+    // We assert both the structural `isError` flag and the substring
+    // (`toContain('denied by disallowedTools')` — a literal `'"denied":true'`
+    // would fail against the outer-wrap JSON-string escaping).
 
     // ----- (a) Bash('rm -rf foo') — denied by `Bash(rm *)` ---------------
     const rmCall = callsByCommand['cmd:rm -rf foo'];
@@ -551,6 +535,7 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
     expect(rmResult, 'expected a tool_result for the rm tool_call').toBeDefined();
     const rmOutput = String(rmResult!.output ?? '');
     expect(rmOutput).toContain('denied by disallowedTools');
+    expect(rmResult!.isError).toBe(true);
 
     // ----- (b) Bash('npm install') — allowed by `Bash(npm *)` ------------
     const npmCall = callsByCommand['cmd:npm install'];
@@ -567,6 +552,7 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
     expect(editResult, 'expected a tool_result for the edit tool_call').toBeDefined();
     const editOutput = String(editResult!.output ?? '');
     expect(editOutput).toContain('denied by disallowedTools');
+    expect(editResult!.isError).toBe(true);
   });
 });
 
@@ -588,23 +574,15 @@ describe('comparative scenario: 19-allowed-disallowed-grammar — rule grammar (
 // `Notification` hook events via the run's `onHook` knob, and asserts:
 //   (a) timeout: `bash({command:'sleep 5', timeout_ms:100,
 //       description:'list build artifacts'})` returns within a generous
-//       timing envelope with `exitCode === 1` and `stderr` containing the
-//       canonical `terminated by SIG{TERM,KILL}` suffix from
-//       bash.ts:139-145.
+//       timing envelope with `exitCode === 1`, the structured
+//       `timedOut: true`, `killSignal: 'SIGTERM'|'SIGKILL'`, and
+//       `isError: true` fields, and the tool_result's `isError` flag set
+//       (via `detectToolResultIsError`'s structured-isError branch).
 //   (b) clamp: `bash({command:':', timeout_ms:700000})` runs to
 //       completion (the clamp shortens to MAX_TIMEOUT_MS but `:` exits
 //       immediately, so no SIGTERM fires) and the `Notification` hook
 //       receives the canonical `'bash timeout_ms exceeds
-//       MAX_TIMEOUT_MS, clamping'` warn payload from bash.ts:54-57.
-//
-// The issue body claims `BashResult` carries `truncated: true` +
-// `exitCode: null` on the kill path; the ACTUAL production interface at
-// bash.ts:11-15 is `{exitCode: number, stdout: string, stderr: string}`
-// — no truncated flag, never-null exitCode (the close handler at
-// bash.ts:142 resolves `exitCode: code ?? 1`, so it's `1` on signal
-// kill, never null). We assert the actually-observable shape; the
-// issue-body spec mismatch + TODO for a structural `BashResult`
-// extension is documented as PR body ambiguity call #2.
+//       MAX_TIMEOUT_MS, clamping'` warn payload from bash.ts.
 //
 // Timing envelope rationale: nominal kill time is 100ms timeout + up to
 // 250ms SIGKILL grace = 350ms. CI subprocess spawn + signal delivery jitter
@@ -743,26 +721,25 @@ describe('comparative scenario: 20-enhanced-bash — spawn machinery (OR-only)',
       exitCode?: unknown;
       stdout?: unknown;
       stderr?: unknown;
+      isError?: unknown;
+      timedOut?: unknown;
+      killSignal?: unknown;
     };
-    // Spec mismatch: the issue body claims `{truncated: true, exitCode: null}`
-    // but the actual production interface at bash.ts:11-15 is
-    // `{exitCode: number, stdout: string, stderr: string}` — never null, no
-    // truncated flag. Assert the actually-observable shape. See PR body
-    // ambiguity call #2.
     expect(sleepOutput.exitCode).toBe(1);
     expect(typeof sleepOutput.stdout).toBe('string');
     expect(typeof sleepOutput.stderr).toBe('string');
-    // The close handler at bash.ts:139-145 appends `terminated by
-    // SIGTERM` or `terminated by SIGKILL` depending on which signal won the
-    // race. On a 100ms timeout against `sleep 5`, SIGTERM almost always
-    // wins (sleep responds to SIGTERM immediately); the SIGKILL branch
-    // fires only when SIGTERM is ignored within the 250ms grace. Accept
-    // either suffix — both prove the kill-on-timeout path fired.
-    const stderr = String(sleepOutput.stderr ?? '');
-    expect(
-      stderr.includes('terminated by SIGTERM') || stderr.includes('terminated by SIGKILL'),
-      `expected stderr to contain SIGTERM/SIGKILL suffix, got: ${JSON.stringify(stderr)}`,
-    ).toBe(true);
+    // Structured failure fields replace the previous stderr-suffix substring
+    // match. On a 100ms timeout against `sleep 5`, SIGTERM almost always wins
+    // (sleep responds to SIGTERM immediately); the SIGKILL branch fires only
+    // when SIGTERM is ignored within the 250ms grace. Accept either signal —
+    // both prove the kill-on-timeout path fired.
+    expect(sleepOutput.timedOut).toBe(true);
+    expect(sleepOutput.killSignal === 'SIGTERM' || sleepOutput.killSignal === 'SIGKILL').toBe(true);
+    expect(sleepOutput.isError).toBe(true);
+    // The structured `isError` field is lifted into the tool_result event by
+    // detectToolResultIsError, so the agent sees the failure without the
+    // model having to substring-match.
+    expect(sleepResult!.isError).toBe(true);
 
     // ----- (b) clamp: timeout_ms=700_000 against `:` ---------------------
     const clampCall = calls.find((c) => {

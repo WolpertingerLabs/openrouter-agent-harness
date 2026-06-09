@@ -64,10 +64,10 @@ export declare function taskCreateTool(ctx?: ToolContext, opts?: TaskToolOptions
 export declare function taskUpdateTool(ctx?: ToolContext, opts?: TaskToolOptions): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     taskId: z.ZodString;
     state: z.ZodEnum<{
+        cancelled: "cancelled";
         pending: "pending";
         in_progress: "in_progress";
         completed: "completed";
-        cancelled: "cancelled";
     }>;
     content: z.ZodOptional<z.ZodString>;
 }, z.core.$strip>, z.core.$ZodType<TaskUpdateToolResult, unknown, z.core.$ZodTypeInternals<TaskUpdateToolResult, unknown>>, Record<string, unknown>>;
