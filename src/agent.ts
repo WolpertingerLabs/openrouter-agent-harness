@@ -1384,7 +1384,10 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
 
     // Use a holder so the abort listener can fire result.cancel() once the
     // call has been issued. result is undefined briefly before callModel().
-    let resultHandle: { cancel(): Promise<void> } | undefined;
+    // `getResponse()` is also tracked so unwind paths (abort + catch) can
+    // observe the SDK's internal `executeToolsIfNeeded` promise — see the
+    // drain comment near each call site for the bug it works around.
+    let resultHandle: { cancel(): Promise<void>; getResponse(): Promise<unknown> } | undefined;
     const onAbort = (): void => {
       if (resultHandle) void resultHandle.cancel().catch(() => undefined);
     };
@@ -2072,6 +2075,16 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         }
 
         if (signal.aborted) {
+          // Drain the SDK's internal executeToolsIfNeeded promise so a
+          // follow-up-turn `response.failed` (which throws inside the SDK
+          // without completing the broadcaster) doesn't surface as an
+          // unhandled rejection and kill the host process. The harness
+          // has already extracted the failure reason from the broadcast
+          // event and is yielding stream_complete { status: 'error' },
+          // so the SDK's rejection is redundant — swallow it.
+          if (resultHandle) {
+            void resultHandle.getResponse().catch(() => undefined);
+          }
           yield {
             type: 'stream_complete',
             status: 'error',
@@ -2196,6 +2209,16 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         ...(interruptedReason !== undefined && { reason: interruptedReason }),
       };
     } catch (err) {
+      // Drain the SDK's internal executeToolsIfNeeded promise so a
+      // follow-up-turn `response.failed` (which throws inside the SDK
+      // without completing the broadcaster) doesn't surface as an
+      // unhandled rejection and kill the host process. The harness
+      // has already extracted the failure reason from the broadcast
+      // event and is yielding stream_complete { status: 'error' },
+      // so the SDK's rejection is redundant — swallow it.
+      if (resultHandle) {
+        void resultHandle.getResponse().catch(() => undefined);
+      }
       if (signal.aborted) {
         yield {
           type: 'stream_complete',
