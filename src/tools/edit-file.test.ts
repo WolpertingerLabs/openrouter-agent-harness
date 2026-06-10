@@ -194,6 +194,80 @@ describe('edit_file tool', () => {
     expect(await readFile(filePath, 'utf-8')).toBe('one TWO three');
   });
 
+  it('preserves $$ in new_string (template literal currency formatting)', async () => {
+    const filePath = join(TMP, 'dollar-template.ts');
+    await writeFile(filePath, 'const label = "PLACEHOLDER";', 'utf-8');
+
+    await execute({
+      path: filePath,
+      old_string: '"PLACEHOLDER"',
+      new_string: '`$${cost.toFixed(2)}`',
+    });
+
+    const content = await readFile(filePath, 'utf-8');
+    expect(content).toBe('const label = `$${cost.toFixed(2)}`;');
+  });
+
+  it('preserves $& (matched-substring sigil) in new_string', async () => {
+    const filePath = join(TMP, 'dollar-amp.txt');
+    await writeFile(filePath, 'X', 'utf-8');
+
+    await execute({ path: filePath, old_string: 'X', new_string: 'a$&b' });
+
+    expect(await readFile(filePath, 'utf-8')).toBe('a$&b');
+  });
+
+  it("preserves $` (before-match sigil) in new_string", async () => {
+    const filePath = join(TMP, 'dollar-backtick.txt');
+    await writeFile(filePath, 'XYZ', 'utf-8');
+
+    await execute({ path: filePath, old_string: 'XYZ', new_string: 'pre$`post' });
+
+    expect(await readFile(filePath, 'utf-8')).toBe('pre$`post');
+  });
+
+  it("preserves $' (after-match sigil) in new_string", async () => {
+    const filePath = join(TMP, 'dollar-quote.txt');
+    await writeFile(filePath, 'XYZ', 'utf-8');
+
+    await execute({ path: filePath, old_string: 'XYZ', new_string: "pre$'post" });
+
+    expect(await readFile(filePath, 'utf-8')).toBe("pre$'post");
+  });
+
+  it('preserves $1 / $2 numeric-capture sigils in new_string', async () => {
+    const filePath = join(TMP, 'dollar-digits.txt');
+    await writeFile(filePath, 'NEEDLE', 'utf-8');
+
+    await execute({ path: filePath, old_string: 'NEEDLE', new_string: '$1 and $2 and $10' });
+
+    expect(await readFile(filePath, 'utf-8')).toBe('$1 and $2 and $10');
+  });
+
+  it('preserves a literal $$ in new_string', async () => {
+    const filePath = join(TMP, 'dollar-dollar.txt');
+    await writeFile(filePath, 'TOKEN', 'utf-8');
+
+    await execute({ path: filePath, old_string: 'TOKEN', new_string: 'cost: $$5' });
+
+    expect(await readFile(filePath, 'utf-8')).toBe('cost: $$5');
+  });
+
+  it('preserves $ sigils with replace_all: true', async () => {
+    const filePath = join(TMP, 'dollar-all.txt');
+    await writeFile(filePath, 'X X X', 'utf-8');
+
+    const result = await execute({
+      path: filePath,
+      old_string: 'X',
+      new_string: '`$${cost}`',
+      replace_all: true,
+    });
+
+    expect(result.replacedCount).toBe(3);
+    expect(await readFile(filePath, 'utf-8')).toBe('`$${cost}` `$${cost}` `$${cost}`');
+  });
+
   it('does NOT snapshot when edit_file fails validation (old_string not found)', async () => {
     const { listCheckpoints } = await import('../checkpoints.js');
     const sessionId = 'edit-cp-fail';
