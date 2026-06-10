@@ -1209,6 +1209,17 @@ export class OpenRouterAgentRun {
                     tools: toolsForRun,
                     state,
                     stopWhen: [stepCountIs(maxTurns), maxCost(maxBudgetUsd)],
+                    // Always request encrypted reasoning content. The agent never sends
+                    // `store: true`, and OpenAI's Responses contract for store:false
+                    // reasoning models only guarantees `encrypted_content` on reasoning
+                    // items when this `include` is present — items without it cannot be
+                    // faithfully echoed back on follow-up turns. OpenRouter currently
+                    // forwards encrypted content on direct passthrough even without
+                    // `include`, but requesting it explicitly is the documented contract
+                    // and keeps sessions working if OR tightens to spec. Verified
+                    // harmless for Anthropic (signature-carrying items, unaffected) and
+                    // Gemini (own encrypted thought-signature items) routed models.
+                    include: ['reasoning.encrypted_content'],
                     ...(this.opts.effort !== undefined && { reasoning: { effort: this.opts.effort } }),
                     // Forward OR auto-cache directive when set. Pinned SDK 0.12.35 doesn't
                     // declare `cacheControl` on `ResponsesRequest`, so we widen the
