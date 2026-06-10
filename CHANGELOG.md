@@ -7,6 +7,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Host process crash on mid-stream `response.failed` (chained-promise orphan).**
+  When an OpenRouter chat run hit a `response.failed` event mid-SSE (e.g.
+  upstream `server_error: Internal Server Error`), the harness's catch arm
+  surfaced the failure as `stream_complete{status:"error"}` correctly — but
+  the host process crashed immediately afterward from an unhandled promise
+  rejection. Observed deterministically in callboard's host daemon on
+  `openai/gpt-5.4 @ xhigh`.
+
+  Root cause: `ModelResult.startTurnBroadcasterExecution`
+  (model-result.js:230) creates TWO promise objects from one underlying
+  execution — the cached `toolExecutionPromise` (what `getResponse()`
+  awaits) and a separate `.finally(...)`-chained `executionPromise`
+  returned to the SDK generator and observed only by `getFullResponsesStream`'s
+  terminal `await executionPromise;` (model-result.js:1586).
+
+  The harness's `response.failed` handler used to throw immediately. That
+  closed the SDK generator via `iter.return()` BEFORE it reached
+  `await executionPromise;`. Meanwhile, the SDK's own `consumeStreamForCompletion`
+  consumer of the same broadcaster saw the failure and rejected
+  `toolExecutionPromise`; the `.finally(...)` chain propagated that
+  rejection onto `executionPromise` — which now had no observer. Node
+  fired `unhandledRejection` and the host exited.
+
+  The existing drain `void resultHandle.getResponse().catch(() => undefined)`
+  only mopped up `toolExecutionPromise` (idempotently cached on `this`);
+  the chained promise is a separate object.
+
+  Fix in `src/agent.ts`: instead of throwing eagerly on `response.failed`,
+  capture the event into a `pendingFailedEvent` local and `continue` the
+  for-await loop. The SDK's own consumer then throws and rejects
+  `toolExecutionPromise`; the chained `.finally(...)` runs
+  `broadcaster.complete()`; the harness's for-await drains naturally; the
+  SDK generator advances to `await executionPromise;` and observes the
+  chained rejection — both promises observed, no orphan. A safety-net
+  throw after the for-await loop and a catch-arm override using
+  `extractResponseFailedMessage(pendingFailedEvent)` preserve the
+  pretty-printed reason (e.g. `server_error: Internal Server Error`)
+  even when the SDK's own throw carries the JSON-stringified envelope.
+
+  Locks in by regression test `src/agent.chained-promise-rejection.test.ts`,
+  which asserts no `unhandledRejection` fires after a `response.failed` on
+  both initial-turn and follow-up-turn cycles.
+
 ## [0.2.1] - 2025-07-15
 
 ### Fixed
@@ -19,7 +64,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   event, no `stream_complete`, and no logger output.
 
   Root cause: the SDK's `_do` method calls `hooks.afterError(ctx, response,
-  null)` on non-2xx responses. When no `afterError` hook was registered (only
+null)` on non-2xx responses. When no `afterError` hook was registered (only
   `beforeCreateRequest` was), the default `SDKHooks.afterError` returned
   `{response, error: null}`, which did not throw and allowed the SDK to
   continue with the 4xx response object. In certain `ModelResult` internal
@@ -28,7 +73,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   failure never surfaced as a throw into agent.ts's `for await` loop.
 
   Two complementary fixes:
-
   1. **`src/tools/server-tools.ts` — `afterError` hook**: `createServerToolsHooks()`
      now also registers an `afterError` hook. When `error` is absent
      (the SDK swallowed the HTTP error), the hook reads the response body,
@@ -44,7 +88,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
      signal is not aborted, the agent now calls `await result.getResponse()`
      in a try/catch. Any rejection is re-thrown, which the outer catch
      block converts to an `error` event + `stream_complete{status:"error",
-     reason}`. This catches any future SDK path that closes the SSE stream
+reason}`. This catches any future SDK path that closes the SSE stream
      without surfacing an error.
 
 ### Changed
