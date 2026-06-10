@@ -95,6 +95,9 @@ describe('agent — drains orphaned getResponse rejection', () => {
       prompt: 'fail please',
       persistSession: false,
       tools: [] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
+      // Pin the single-attempt terminal-unwind path — the retry loop has its
+      // own drain coverage in agent.transient-retry.test.ts.
+      maxTransientRetries: 0,
     });
 
     const collected: AgentCoreEvent[] = [];

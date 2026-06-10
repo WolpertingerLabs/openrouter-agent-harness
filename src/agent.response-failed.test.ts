@@ -61,6 +61,11 @@ async function reasonFor(events: unknown[]): Promise<string | undefined> {
     prompt: 'fail please',
     persistSession: false,
     tools: [] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
+    // This suite tests reason EXTRACTION only — disable the transient-failure
+    // retry loop so `server_error`-coded events fail in one attempt instead
+    // of burning the default 2 retries + backoff (covered by
+    // agent.transient-retry.test.ts).
+    maxTransientRetries: 0,
   });
   const collected: AgentCoreEvent[] = [];
   for await (const e of run) collected.push(e);

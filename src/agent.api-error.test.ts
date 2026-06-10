@@ -93,6 +93,7 @@ import type { AgentCoreEvent } from './events.js';
 function makeThrowingCallModel(errorMessage: string) {
   return () => ({
     cancel: async () => undefined,
+    // eslint-disable-next-line require-yield
     async *getFullResponsesStream(): AsyncGenerator<unknown> {
       throw new Error(errorMessage);
     },
