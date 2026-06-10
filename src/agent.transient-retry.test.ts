@@ -168,7 +168,9 @@ async function collect(run: OpenRouterAgentRun): Promise<AgentCoreEvent[]> {
   return events;
 }
 
-function completeOf(events: AgentCoreEvent[]): Extract<AgentCoreEvent, { type: 'stream_complete' }> {
+function completeOf(
+  events: AgentCoreEvent[],
+): Extract<AgentCoreEvent, { type: 'stream_complete' }> {
   const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
   expect(complete.type).toBe('stream_complete');
   return complete;
@@ -380,7 +382,12 @@ describe('transient-failure retry — exhaustion and non-retryable classes', () 
     ],
     [
       'a null error envelope',
-      { type: 'response.failed', sequenceNumber: 1, message: 'edge gave up', response: { error: null } },
+      {
+        type: 'response.failed',
+        sequenceNumber: 1,
+        message: 'edge gave up',
+        response: { error: null },
+      },
       'edge gave up',
     ],
     [
@@ -400,7 +407,10 @@ describe('transient-failure retry — exhaustion and non-retryable classes', () 
   });
 
   it.each([
-    ['an HTTP 4xx statusCode error', Object.assign(new Error('Bad Request: Status 400'), { statusCode: 400 })],
+    [
+      'an HTTP 4xx statusCode error',
+      Object.assign(new Error('Bad Request: Status 400'), { statusCode: 400 }),
+    ],
     ['a generic Error without statusCode', new Error('boom')],
     ['an Error with a null cause', new Error('boom', { cause: null })],
     ['a thrown string', 'string failure'],
@@ -471,9 +481,7 @@ describe('transient-failure retry — persisted-session log layout', () => {
       .mockImplementationOnce(successfulAttempt());
 
     const sessionId = 'sess-retry-logs';
-    const events = await collect(
-      makeRun({ sessionId, persistSession: true, logsRoot: tmpRoot }),
-    );
+    const events = await collect(makeRun({ sessionId, persistSession: true, logsRoot: tmpRoot }));
 
     expect(completeOf(events).status).toBe('success');
     // The retry reuses the failed cycle's request id — `logs/<session>/req_*/`

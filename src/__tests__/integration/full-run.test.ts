@@ -486,9 +486,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
       prompt: 'try to run a command',
-      tools: [bashStub] as unknown as ConstructorParameters<
-        typeof OpenRouterAgentRun
-      >[0]['tools'],
+      tools: [bashStub] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
       permissionMode: 'default',
     });
     const events = await collect(run);
@@ -522,9 +520,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
       prompt: 'echo something',
-      tools: [bashStub] as unknown as ConstructorParameters<
-        typeof OpenRouterAgentRun
-      >[0]['tools'],
+      tools: [bashStub] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
       allowedTools: ['Bash(echo *)'],
     });
     const events = await collect(run);
@@ -558,9 +554,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
       prompt: 'echo something',
-      tools: [bashStub] as unknown as ConstructorParameters<
-        typeof OpenRouterAgentRun
-      >[0]['tools'],
+      tools: [bashStub] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
       disallowedTools: ['Bash(echo *)'],
     });
     const events = await collect(run);

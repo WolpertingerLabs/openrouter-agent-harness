@@ -93,11 +93,7 @@ describe('createServerToolsHooks — afterError hook', () => {
     const hooks = createServerToolsHooks();
     // The hook is registered as the first (and only) afterErrorHook.
     const hook = hooks.afterErrorHooks[0];
-    return hook.afterError(
-      {} as Parameters<typeof hook.afterError>[0],
-      response,
-      error,
-    );
+    return hook.afterError({} as Parameters<typeof hook.afterError>[0], response, error);
   }
 
   it('passes through when an error object is already present', async () => {

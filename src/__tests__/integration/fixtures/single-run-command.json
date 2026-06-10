@@ -66,9 +66,7 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": [
-                  "command"
-                ],
+                "required": ["command"],
                 "additionalProperties": false
               },
               "strict": null,
@@ -131,9 +129,7 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": [
-                  "command"
-                ],
+                "required": ["command"],
                 "additionalProperties": false
               },
               "strict": null,
@@ -286,9 +282,7 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": [
-                  "command"
-                ],
+                "required": ["command"],
                 "additionalProperties": false
               },
               "strict": null,
@@ -394,9 +388,7 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": [
-                  "command"
-                ],
+                "required": ["command"],
                 "additionalProperties": false
               },
               "strict": null,
@@ -459,9 +451,7 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": [
-                  "command"
-                ],
+                "required": ["command"],
                 "additionalProperties": false
               },
               "strict": null,
@@ -632,9 +622,7 @@
                     "description": "The shell command to run"
                   }
                 },
-                "required": [
-                  "command"
-                ],
+                "required": ["command"],
                 "additionalProperties": false
               },
               "strict": null,
@@ -658,7 +646,7 @@
             "costDetails": {
               "upstreamInferenceCost": 0.000765,
               "upstreamInferenceInputCost": 0.000745,
-              "upstreamInferenceOutputCost": 2e-05
+              "upstreamInferenceOutputCost": 2e-5
             },
             "isByok": false
           }
@@ -696,7 +684,7 @@
       "costDetails": {
         "upstreamInferenceCost": 0.000765,
         "upstreamInferenceInputCost": 0.000745,
-        "upstreamInferenceOutputCost": 2e-05
+        "upstreamInferenceOutputCost": 2e-5
       },
       "isByok": false
     },

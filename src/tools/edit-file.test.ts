@@ -217,7 +217,7 @@ describe('edit_file tool', () => {
     expect(await readFile(filePath, 'utf-8')).toBe('a$&b');
   });
 
-  it("preserves $` (before-match sigil) in new_string", async () => {
+  it('preserves $` (before-match sigil) in new_string', async () => {
     const filePath = join(TMP, 'dollar-backtick.txt');
     await writeFile(filePath, 'XYZ', 'utf-8');
 
