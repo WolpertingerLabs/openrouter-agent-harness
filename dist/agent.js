@@ -621,6 +621,15 @@ export class OpenRouterAgentRun {
         // stream throw, abort). The happy-path arm assigns the result of
         // {@link deriveCompletionStatus}.
         let status = 'error';
+        // Captured when a `response.failed` event flows through the SDK
+        // broadcaster. We intentionally do NOT throw from inside the for-await
+        // loop because that would close the SDK generator (via `iter.return()`)
+        // before it reaches its terminal `await executionPromise;` — orphaning
+        // the chained promise created by `startTurnBroadcasterExecution`'s
+        // `.finally()` and surfacing as an `unhandledRejection` that kills the
+        // host process. Holding the event here lets the catch arm convert it to
+        // the pretty-printed reason via {@link extractResponseFailedMessage}.
+        let pendingFailedEvent = null;
         this.#isIterating = true;
         // Phase 5.8: per-plugin start timestamps so `PluginStop` can report the
         // elapsed lifetime. Populated as each `PluginStart` fires below; drained
@@ -1265,18 +1274,37 @@ export class OpenRouterAgentRun {
                         // A `response.failed` event means the request was accepted (200 + SSE
                         // established) but generation failed afterward (upstream provider
                         // error, moderation block, "no endpoints available", timeout, …).
-                        // The SDK only converts this to a thrown error on follow-up turns
-                        // (`pipeAndConsumeStream`); on the initial response of a cycle it is
-                        // pushed through as an ordinary event and would otherwise fall
-                        // through the loop, leaving the run to resolve as `success`. Throw
-                        // so the catch at the end of the cycle emits the `error` event +
-                        // terminal `stream_complete { status: 'error', reason }`. Let an
-                        // in-flight abort win — matching the abort-first precedence in that
-                        // catch and the other handlers above.
+                        //
+                        // The SDK's own `consumeStreamForCompletion` consumer of the same
+                        // broadcaster throws on `response.failed` — that rejects the cached
+                        // `toolExecutionPromise`. `ModelResult.startTurnBroadcasterExecution`
+                        // chains a `.finally(...)` onto it (model-result.js:234) and returns
+                        // the chained promise as `executionPromise`. The SDK generator
+                        // `getFullResponsesStream` awaits `executionPromise` AFTER its inner
+                        // consumer loop drains (model-result.js:1586).
+                        //
+                        // If we throw here from the harness's consumer of the broadcast,
+                        // our for-await closes the SDK generator via `iter.return()`
+                        // BEFORE it reaches `await executionPromise;`. The chained promise
+                        // is then orphaned, settles rejected with no observer, and Node
+                        // surfaces it as `unhandledRejection` — crashing host processes
+                        // (e.g. callboard) that have no global handler.
+                        //
+                        // Instead, capture the event and continue draining the broadcast.
+                        // The SDK's own consumer will throw and reject `toolExecutionPromise`;
+                        // `.finally(...)` will run `broadcaster.complete()`; our for-await
+                        // exits naturally; the SDK generator advances past its for-await
+                        // loop to `await executionPromise;` and observes the rejection,
+                        // throwing into our for-await on the next iteration. The catch arm
+                        // below then yields `error` + `stream_complete{status:"error"}`
+                        // using `pendingFailedEvent` for the pretty reason.
+                        //
+                        // Abort still wins (matches the abort-first precedence elsewhere).
                         if ('type' in event && event.type === 'response.failed') {
                             if (signal.aborted)
                                 continue;
-                            throw new Error(extractResponseFailedMessage(event));
+                            pendingFailedEvent = event;
+                            continue;
                         }
                         // `response.completed` fires once per SDK turn — the initial
                         // response (which may be the only one if there are no tool calls)
@@ -1330,6 +1358,15 @@ export class OpenRouterAgentRun {
                             }
                             continue;
                         }
+                    }
+                    // Safety net for `response.failed`: if the harness captured a
+                    // failed event but the SDK's own consumer somehow did not throw
+                    // (or this cycle's SSE simply ended after the failure with no
+                    // further events), surface it ourselves so the catch arm fires.
+                    // When the SDK DID throw, our for-await already rethrew above and
+                    // this block is unreachable — the throw goes straight to the catch.
+                    if (pendingFailedEvent !== null && !signal.aborted) {
+                        throw new Error(extractResponseFailedMessage(pendingFailedEvent));
                     }
                     // Defense-in-depth: if the SSE stream closed without ever emitting
                     // `response.completed` AND we are not in an abort/interrupt path,
@@ -1509,7 +1546,15 @@ export class OpenRouterAgentRun {
                 stopPayload = { event: 'Stop', status: 'error', reason: ABORT_REASON };
                 return;
             }
-            const message = err instanceof Error ? err.message : String(err);
+            // If a `response.failed` event was captured mid-stream, prefer its
+            // pretty-printed reason (e.g. `server_error: Internal Server Error`)
+            // over whatever bubbled up — when the SDK's own consumer rethrew it,
+            // the message is the JSON-stringified error envelope.
+            const message = pendingFailedEvent !== null
+                ? extractResponseFailedMessage(pendingFailedEvent)
+                : err instanceof Error
+                    ? err.message
+                    : String(err);
             logger?.('error', 'OpenRouterAgentRun stream errored', { message });
             yield { type: 'error', message, cause: err };
             yield {
