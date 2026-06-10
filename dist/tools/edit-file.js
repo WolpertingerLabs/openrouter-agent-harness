@@ -49,7 +49,7 @@ export function editFileTool(ctx = DEFAULT_TOOL_CONTEXT) {
             }
             const updated = replace_all
                 ? content.split(old_string).join(new_string)
-                : content.replace(old_string, new_string);
+                : content.replace(old_string, () => new_string);
             await writeFile(resolved, updated, 'utf-8');
             return { path, replaced: true, replacedCount: occurrences };
         },
