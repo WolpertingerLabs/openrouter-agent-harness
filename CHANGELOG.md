@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Bounded retry with backoff for transient `response.failed` errors.**
+  A single transient upstream failure (`response.failed` with code
+  `server_error` / `overloaded`, or an HTTP 5xx from the SDK) used to be
+  terminal: it killed the entire multi-cycle agent run. Observed in
+  production on 2026-06-10 — callboard cron sessions `ce7247e2` (8
+  successful generations, then one upstream 500 → whole run dead) and
+  `b11b0fd7`, both on valid payloads that replayed successfully 4/4 after
+  the incident window.
+
+  The per-cycle loop in `src/agent.ts` now retries a transiently-failed
+  `callModel` cycle up to `maxTransientRetries` times (default 2) with
+  exponential backoff (`transientRetryBaseDelayMs * 2^attempt`, default
+  base 500ms). Both knobs are constructor options, inherited by spawned
+  subagents; `maxTransientRetries: 0` restores the previous behavior. Each
+  retry logs at `warn` level with the failure reason and attempt number.
+
+  Scope and safety:
+  - Only transient classes retry: `response.failed` code `server_error` /
+    `overloaded` (the structured event code is authoritative), or an HTTP
+    5xx `statusCode` on the thrown error / its `cause`. Aborts, 4xx-class
+    errors, moderation blocks, and budget exhaustion never retry.
+  - Re-issuing the same fresh input is duplication-safe by SDK design:
+    `saveResponseToState` persists pending fresh user items atomically with
+    the assistant output only after a response completes (vendor
+    model-result.js — "avoiding duplication when a caller retries after a
+    transient API failure"), so a cycle that died before its first
+    completed response left state untouched. When a FOLLOW-UP turn died
+    instead, the fresh items are already in state — the retry re-issues
+    the cycle with an empty input and continues from history. Either way
+    fresh user items never appear twice in state (verified by test).
+  - Retried cycles don't double-count toward `max_turns` (run-wide
+    turn-number max, not a sum) and reuse the failed cycle's request id so
+    `logs/<session>/req_*/` stays 1:1 with logical cycles. The failed
+    attempt's pending SDK rejection is drained before the backoff sleep,
+    preserving the PR #210/#212 no-unhandled-rejection guarantees.
+
+  Covered by `src/agent.transient-retry.test.ts` (driven through real
+  stream events, including state-persistence and abort-during-backoff
+  scenarios).
+
 ### Fixed
 
 - **Host process crash on mid-stream `response.failed` (chained-promise orphan).**

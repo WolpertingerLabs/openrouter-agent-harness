@@ -116,6 +116,37 @@ export interface OpenRouterAgentRunOptions {
     /** Max cumulative cost in USD. Defaults to 1.0. */
     maxBudgetUsd?: number;
     /**
+     * Maximum number of automatic retries when a `callModel` cycle dies with a
+     * TRANSIENT terminal failure — a `response.failed` SSE event whose error
+     * code is `server_error` / `overloaded`, or an HTTP 5xx error from the SDK.
+     * Deterministic failures (4xx-class errors, moderation blocks, context
+     * overflow) and abort/interrupt paths are never retried.
+     *
+     * Each retry re-issues the same cycle with the same fresh input after a
+     * short exponential backoff (see {@link transientRetryBaseDelayMs}). This is
+     * safe by SDK design: the OR Agent SDK persists a cycle's fresh user items
+     * atomically with the assistant output only after a response completes, so
+     * a cycle that failed before its first completed response left state
+     * untouched; when a follow-up turn failed instead, the retry continues from
+     * the already-persisted history without re-sending the fresh items — user
+     * items never appear twice in state. Each attempt is logged at `warn` level
+     * via {@link AgentLogger} with the failure reason and attempt number.
+     *
+     * Inherited by spawned subagents. Set `0` to disable retries entirely
+     * (every transient failure becomes terminal, the pre-0.2.2 behavior).
+     * Defaults to {@link DEFAULT_MAX_TRANSIENT_RETRIES} = 2.
+     */
+    maxTransientRetries?: number;
+    /**
+     * Base delay in milliseconds for the exponential backoff between transient
+     * -failure retries: retry N (0-based) sleeps `base * 2^N` ms before
+     * re-issuing the cycle. The sleep is abort-aware — an abort during the
+     * backoff window cancels the pending retry and unwinds as a normal abort.
+     * Inherited by spawned subagents. Defaults to
+     * {@link DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS} = 500.
+     */
+    transientRetryBaseDelayMs?: number;
+    /**
      * Tool set passed to the model. Defaults to the built-in 12-client-tool set
      * bound to a {@link ToolContext} derived from the run's `cwd` and composite
      * AbortSignal; server tools (datetime/web_search/web_fetch) are injected via

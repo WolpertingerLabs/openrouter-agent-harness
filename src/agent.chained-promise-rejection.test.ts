@@ -133,6 +133,11 @@ describe('agent — no orphaned chained-promise rejection on response.failed', (
       prompt: 'fail please',
       persistSession: false,
       tools: [] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
+      // This suite pins the terminal-unwind drain path — disable the
+      // transient-failure retry loop so the `server_error`-coded event fails
+      // in one attempt (the retry-path drain is covered by
+      // agent.transient-retry.test.ts).
+      maxTransientRetries: 0,
     });
 
     const collected: AgentCoreEvent[] = [];
@@ -198,6 +203,8 @@ describe('agent — no orphaned chained-promise rejection on response.failed', (
       prompt: 'fail on follow-up',
       persistSession: false,
       tools: [] as unknown as ConstructorParameters<typeof OpenRouterAgentRun>[0]['tools'],
+      // See the maxTransientRetries note on the previous test.
+      maxTransientRetries: 0,
     });
 
     const collected: AgentCoreEvent[] = [];

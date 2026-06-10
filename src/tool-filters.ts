@@ -133,8 +133,7 @@ export function compileRule(rule: string): CompiledRule {
       `Invalid tool filter rule "${rule}": tool "${canonical}" does not support scoped patterns.`,
     );
   }
-  const regex =
-    canonical === 'bash' ? compileBashPattern(pattern) : compileGlobToRegex(pattern);
+  const regex = canonical === 'bash' ? compileBashPattern(pattern) : compileGlobToRegex(pattern);
   return {
     toolName: canonical,
     matches: (input: unknown): boolean => {

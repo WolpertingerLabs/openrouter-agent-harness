@@ -91,6 +91,19 @@ const DEFAULT_MAX_TURNS = 25;
 const DEFAULT_MAX_BUDGET_USD = 1.0;
 const DEFAULT_APP_TITLE = 'openrouter-agent-harness';
 const ABORT_REASON = 'aborted';
+/**
+ * Default number of automatic retries for a callModel cycle that died with a
+ * transient terminal failure (see {@link OpenRouterAgentRunOptions.maxTransientRetries}).
+ * Two retries + the initial attempt rides out the single-shot upstream 500s
+ * observed in production (2026-06-10 incident: exact replays of the failing
+ * payloads succeeded immediately after the incident window).
+ */
+const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
+/**
+ * Default base delay for the exponential backoff between transient-failure
+ * retries: attempt N sleeps `base * 2^N` ms (500ms, 1s, 2s, …).
+ */
+const DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS = 500;
 
 /**
  * Default system instructions for the built-in code-editing agent. Exported so
@@ -211,6 +224,37 @@ export interface OpenRouterAgentRunOptions {
   maxTurns?: number;
   /** Max cumulative cost in USD. Defaults to 1.0. */
   maxBudgetUsd?: number;
+  /**
+   * Maximum number of automatic retries when a `callModel` cycle dies with a
+   * TRANSIENT terminal failure — a `response.failed` SSE event whose error
+   * code is `server_error` / `overloaded`, or an HTTP 5xx error from the SDK.
+   * Deterministic failures (4xx-class errors, moderation blocks, context
+   * overflow) and abort/interrupt paths are never retried.
+   *
+   * Each retry re-issues the same cycle with the same fresh input after a
+   * short exponential backoff (see {@link transientRetryBaseDelayMs}). This is
+   * safe by SDK design: the OR Agent SDK persists a cycle's fresh user items
+   * atomically with the assistant output only after a response completes, so
+   * a cycle that failed before its first completed response left state
+   * untouched; when a follow-up turn failed instead, the retry continues from
+   * the already-persisted history without re-sending the fresh items — user
+   * items never appear twice in state. Each attempt is logged at `warn` level
+   * via {@link AgentLogger} with the failure reason and attempt number.
+   *
+   * Inherited by spawned subagents. Set `0` to disable retries entirely
+   * (every transient failure becomes terminal, the pre-0.2.2 behavior).
+   * Defaults to {@link DEFAULT_MAX_TRANSIENT_RETRIES} = 2.
+   */
+  maxTransientRetries?: number;
+  /**
+   * Base delay in milliseconds for the exponential backoff between transient
+   * -failure retries: retry N (0-based) sleeps `base * 2^N` ms before
+   * re-issuing the cycle. The sleep is abort-aware — an abort during the
+   * backoff window cancels the pending retry and unwinds as a normal abort.
+   * Inherited by spawned subagents. Defaults to
+   * {@link DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS} = 500.
+   */
+  transientRetryBaseDelayMs?: number;
   /**
    * Tool set passed to the model. Defaults to the built-in 12-client-tool set
    * bound to a {@link ToolContext} derived from the run's `cwd` and composite
@@ -629,6 +673,19 @@ interface ResolvedOptions {
   cwd: string;
   maxTurns: number;
   maxBudgetUsd: number;
+  /**
+   * Resolved retry budget for transient terminal cycle failures (defaulted
+   * to {@link DEFAULT_MAX_TRANSIENT_RETRIES}). Consumed by the per-cycle
+   * retry loop in {@link OpenRouterAgentRun.iterate} and inherited by
+   * spawned subagents.
+   */
+  maxTransientRetries: number;
+  /**
+   * Resolved exponential-backoff base (ms) between transient-failure retries
+   * (defaulted to {@link DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS}). Inherited
+   * by spawned subagents alongside {@link maxTransientRetries}.
+   */
+  transientRetryBaseDelayMs: number;
   tools: readonly Tool[];
   appTitle: string;
   logsRoot: string;
@@ -760,6 +817,9 @@ function resolveOptions(opts: OpenRouterAgentRunOptions): ResolvedOptions {
     cwd,
     maxTurns: opts.maxTurns ?? DEFAULT_MAX_TURNS,
     maxBudgetUsd: opts.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD,
+    maxTransientRetries: opts.maxTransientRetries ?? DEFAULT_MAX_TRANSIENT_RETRIES,
+    transientRetryBaseDelayMs:
+      opts.transientRetryBaseDelayMs ?? DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS,
     tools: opts.tools ?? [],
     appTitle: opts.appTitle ?? DEFAULT_APP_TITLE,
     logsRoot: opts.logsRoot ?? join(cwd, 'logs'),
@@ -1269,6 +1329,8 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       cwd,
       maxTurns,
       maxBudgetUsd,
+      maxTransientRetries,
+      transientRetryBaseDelayMs,
       tools: userTools,
       appTitle,
       logsRoot,
@@ -1553,6 +1615,8 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           cwd,
           maxTurns: config.maxTurns ?? maxTurns,
           maxBudgetUsd: config.maxBudgetUsd ?? maxBudgetUsd,
+          maxTransientRetries,
+          transientRetryBaseDelayMs,
           appTitle,
           logsRoot,
           persistSession,
@@ -1846,52 +1910,88 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       // Tracked across cycles so the run-wide `max_budget` guard fires
       // even when individual cycles stay under budget.
       // (totalCostUsd is the run-wide accumulator already.)
+      //
+      // Transient-failure retry carry. When a cycle dies with a TRANSIENT
+      // terminal failure (`response.failed` code `server_error`/`overloaded`
+      // or an HTTP 5xx — see {@link isTransientCycleFailure}), the catch arm
+      // below sets this and `continue`s, so the next loop iteration re-runs
+      // the SAME cycle instead of pulling new user input. Carries the
+      // 0-based retry attempt number (compared against `maxTransientRetries`),
+      // the failed cycle's request id (its request/user-transcript records
+      // were already written — re-logging would duplicate them), and the
+      // input for the re-issued callModel: the same fresh items when the
+      // failed attempt never completed a response (the SDK persists fresh
+      // items atomically with the assistant output, so state is untouched),
+      // or `[]` when a FOLLOW-UP turn died (the fresh items are already in
+      // state — the retry continues from history, never duplicating them).
+      // Cleared on any successfully-completed cycle.
+      let retryState: {
+        attempt: number;
+        requestId: string;
+        input: ReturnType<typeof userInputToCallModelItem>[];
+      } | null = null;
 
       while (true) {
-        // 1. Pull the next user input. Drains the imperative
-        //    pushUserMessage() queue first (FIFO), then the constructor
-        //    AsyncIterable<UserInput> if one was supplied. Done when both
-        //    are exhausted.
-        const inputResult = await this.#inputSource.next();
-        if (inputResult.done) break;
-        processedAnyInput = true;
+        let cycleRequestId: string;
+        let cycleInput: ReturnType<typeof userInputToCallModelItem>[];
+        if (retryState === null) {
+          // 1. Pull the next user input. Drains the imperative
+          //    pushUserMessage() queue first (FIFO), then the constructor
+          //    AsyncIterable<UserInput> if one was supplied. Done when both
+          //    are exhausted.
+          const inputResult = await this.#inputSource.next();
+          if (inputResult.done) break;
+          processedAnyInput = true;
 
-        // 2. Commit any partial assistant text from a prior interrupt as
-        //    a proper assistant message in the persisted history. Drops
-        //    in-flight tool calls (their results never arrived; the next
-        //    user push moves past them). No-op on the very first cycle —
-        //    the SDK has not had a chance to populate `partialResponse`
-        //    yet, and skipping the load avoids an unnecessary FS hit.
-        if (processedAnyInput && interruptedReason !== undefined) {
-          try {
-            await commitPartialResponse(this.stateAccessor);
-          } catch (err) {
-            logger?.('warn', 'Failed to commit partial response between turns', {
-              error: err,
-            });
+          // 2. Commit any partial assistant text from a prior interrupt as
+          //    a proper assistant message in the persisted history. Drops
+          //    in-flight tool calls (their results never arrived; the next
+          //    user push moves past them). No-op on the very first cycle —
+          //    the SDK has not had a chance to populate `partialResponse`
+          //    yet, and skipping the load avoids an unnecessary FS hit.
+          if (processedAnyInput && interruptedReason !== undefined) {
+            try {
+              await commitPartialResponse(this.stateAccessor);
+            } catch (err) {
+              logger?.('warn', 'Failed to commit partial response between turns', {
+                error: err,
+              });
+            }
+            // Once committed, clear the local marker — a subsequent
+            // interrupt within this loop will set it again.
+            interruptedReason = undefined;
           }
-          // Once committed, clear the local marker — a subsequent
-          // interrupt within this loop will set it again.
-          interruptedReason = undefined;
-        }
 
-        // 3. Per-cycle request id + per-cycle request log entry. Each
-        //    callModel is its own request from OR's perspective; using
-        //    one id per cycle keeps `logs/<session>/req_*/` directories
-        //    in 1:1 correspondence with the wire calls.
-        const cycleRequestId = createRequestId();
-        const cyclePromptForLog =
-          typeof inputResult.value.content === 'string'
-            ? inputResult.value.content
-            : JSON.stringify(inputResult.value.content);
-        if (persistSession) {
-          await logRequest(logsRoot, {
-            sessionId,
-            requestId: cycleRequestId,
-            prompt: cyclePromptForLog,
-            timestamp: new Date().toISOString(),
-          });
-          await logTranscriptUser({ logsRoot, sessionId, text: cyclePromptForLog });
+          // 3. Per-cycle request id + per-cycle request log entry. Each
+          //    callModel is its own request from OR's perspective; using
+          //    one id per cycle keeps `logs/<session>/req_*/` directories
+          //    in 1:1 correspondence with the wire calls.
+          cycleRequestId = createRequestId();
+          const cyclePromptForLog =
+            typeof inputResult.value.content === 'string'
+              ? inputResult.value.content
+              : JSON.stringify(inputResult.value.content);
+          if (persistSession) {
+            await logRequest(logsRoot, {
+              sessionId,
+              requestId: cycleRequestId,
+              prompt: cyclePromptForLog,
+              timestamp: new Date().toISOString(),
+            });
+            await logTranscriptUser({ logsRoot, sessionId, text: cyclePromptForLog });
+          }
+          cycleInput = [userInputToCallModelItem(inputResult.value)];
+        } else {
+          // Retry of the previous cycle. Steps 1–3 are skipped wholesale:
+          // no new input is pulled, no partial-response commit can be
+          // pending (interrupts exit the SDK gracefully — they never reach
+          // the retry catch arm), and the request/user-transcript records
+          // were written by the failed attempt already. Follow-up
+          // generations logged under the carried request id keep the
+          // `logs/<session>/req_*/` directory in 1:1 correspondence with
+          // the logical cycle.
+          cycleRequestId = retryState.requestId;
+          cycleInput = retryState.input;
         }
 
         // 4. Fire the callModel for this cycle. The state accessor is
@@ -1900,7 +2000,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         const result = client.callModel({
           model,
           sessionId,
-          input: [userInputToCallModelItem(inputResult.value)],
+          input: cycleInput,
           instructions,
           tools: toolsForRun,
           state,
@@ -1955,6 +2055,10 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         // loop we detect this situation and surface a synthetic error so the
         // consumer always sees `stream_complete{status:"error"}`.
         let responseCompleted = false;
+        // Reset the failure capture for this attempt — a stale event from a
+        // failed-and-retried predecessor cycle must not poison this attempt's
+        // post-loop safety net or the outer catch's reason extraction.
+        pendingFailedEvent = null;
 
         try {
           for await (const event of result.getFullResponsesStream()) {
@@ -2132,10 +2236,57 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
               throw new Error(msg, { cause: err });
             }
           }
+        } catch (err) {
+          // Drain the SDK's internal executeToolsIfNeeded promise BEFORE
+          // deciding whether to retry — same rationale as the outer catch:
+          // a follow-up-turn `response.failed` rejects inside the SDK
+          // without completing the broadcaster, and leaving that rejection
+          // unobserved while we sleep through the backoff window would
+          // surface as an `unhandledRejection` that kills the host process.
+          void result.getResponse().catch(() => undefined);
+          // Explicit `: number` breaks a TS7022 circularity: the literal
+          // assigned to `retryState` below references this local, and the
+          // flow-narrowed type of `retryState` here depends on that literal.
+          const attempt: number = retryState?.attempt ?? 0;
+          const transient = !signal.aborted && isTransientCycleFailure(pendingFailedEvent, err);
+          if (!transient || attempt >= maxTransientRetries) throw err;
+          const reason =
+            pendingFailedEvent !== null
+              ? extractResponseFailedMessage(pendingFailedEvent)
+              : err instanceof Error
+                ? err.message
+                : String(err);
+          const backoffMs = transientRetryBaseDelayMs * 2 ** attempt;
+          logger?.('warn', 'Transient model failure — retrying cycle', {
+            reason,
+            attempt: attempt + 1,
+            maxRetries: maxTransientRetries,
+            backoffMs,
+          });
+          // `responseCompleted` means the SDK already persisted this cycle's
+          // fresh user items (atomically with that turn's assistant output)
+          // — re-sending them would duplicate the user turn in state, so the
+          // retry continues from the stored history with an empty input.
+          retryState = {
+            attempt: attempt + 1,
+            requestId: cycleRequestId,
+            input: responseCompleted ? [] : cycleInput,
+          };
+          pendingFailedEvent = null;
+          await sleepWithAbort(backoffMs, signal);
+          // Abort arrived during the backoff window — surface the original
+          // error to the outer catch (which converts it to the abort-reason
+          // stream_complete) rather than firing a request the caller no
+          // longer wants.
+          if (signal.aborted) throw err;
+          continue;
         } finally {
           resolveCycle();
           this.#currentCycle = undefined;
         }
+        // The cycle ran to completion — drop any retry carry so the next
+        // iteration pulls fresh user input again.
+        retryState = null;
 
         if (signal.aborted) {
           // Drain the SDK's internal executeToolsIfNeeded promise so a
@@ -2649,6 +2800,80 @@ function namedFromPositional(
  * Best-effort: unknown item shapes are skipped silently rather than throwing,
  * so transcript writes never block the run on SDK schema drift.
  */
+/**
+ * `response.failed` error codes that indicate a TRANSIENT upstream condition
+ * worth retrying — the request was valid but the provider (or OR's edge)
+ * failed to serve it this time. Everything else (moderation blocks,
+ * invalid-request shapes, context overflow, …) is deterministic: retrying
+ * would re-spend budget for the same outcome.
+ */
+const TRANSIENT_FAILURE_CODES: ReadonlySet<string> = new Set(['server_error', 'overloaded']);
+
+/** Read a numeric `statusCode` property off an arbitrary value, if present. */
+function statusCodeAt(value: unknown): number | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const code = (value as { statusCode?: unknown }).statusCode;
+  return typeof code === 'number' ? code : undefined;
+}
+
+/**
+ * Find the numeric `statusCode` that `@openrouter/sdk`'s `OpenRouterError`
+ * hierarchy exposes on HTTP-level failures. Checks the error itself, then one
+ * `cause` hop — the post-loop silent-hang safety net rethrows the SDK error
+ * wrapped as `new Error(msg, { cause })`, which would otherwise hide the code.
+ */
+function extractStatusCode(err: unknown): number | undefined {
+  return statusCodeAt(err) ?? statusCodeAt((err as { cause?: unknown } | null)?.cause);
+}
+
+/**
+ * Classify a failed callModel cycle as transient (worth retrying) or not.
+ *
+ * Precedence: when a `response.failed` event was captured for the attempt,
+ * its structured `response.error.code` is authoritative — the SDK's own
+ * rethrow of the same failure is a `JSON.stringify` of that envelope, so
+ * falling through to the thrown error would just re-parse worse data. Only
+ * `server_error` / `overloaded` codes qualify. Without a captured event
+ * (HTTP-level failure before the SSE stream established, or the silent-hang
+ * surfacing path), an HTTP 5xx-class `statusCode` on the thrown error (or
+ * its `cause`) qualifies. Everything else — 4xx-class errors, moderation,
+ * unknown shapes — is non-retryable; aborts are excluded by the caller
+ * before this is consulted.
+ */
+function isTransientCycleFailure(failedEvent: unknown, err: unknown): boolean {
+  if (failedEvent !== null) {
+    const code = (failedEvent as { response?: { error?: { code?: unknown } | null } | null })
+      .response?.error?.code;
+    return typeof code === 'string' && TRANSIENT_FAILURE_CODES.has(code);
+  }
+  const statusCode = extractStatusCode(err);
+  return statusCode !== undefined && statusCode >= 500;
+}
+
+/**
+ * Abort-aware sleep used for the backoff window between transient-failure
+ * retry attempts. Resolves (never rejects) after `ms` milliseconds OR as soon
+ * as the signal aborts — the caller re-checks `signal.aborted` afterwards and
+ * converts the pending retry into a normal abort unwind. Callers must pass a
+ * not-yet-aborted signal (the retry catch arm only reaches this after its
+ * `!signal.aborted` transient check, with no awaits in between) — a listener
+ * added to an already-aborted signal would never fire.
+ */
+function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 /**
  * Pull the most useful human-readable text out of a `response.failed` stream
  * event. The richest detail lives at `event.response.error.message` (with a
