@@ -94,6 +94,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which asserts no `unhandledRejection` fires after a `response.failed` on
   both initial-turn and follow-up-turn cycles.
 
+- **Encrypted reasoning content now requested on every model call.** The main
+  `callModel` in `src/agent.ts` now sends
+  `include: ["reasoning.encrypted_content"]` unconditionally. The harness
+  always runs with `store: false` semantics, and OpenAI's Responses API
+  contract only guarantees `encrypted_content` on reasoning items when this
+  `include` is present — reasoning items without it (synthetic `rs_tmp_*` ids,
+  plaintext summaries only) cannot be faithfully echoed back to reasoning
+  models on follow-up turns and rely on provider-side leniency. With the fix,
+  OpenAI-routed runs persist reasoning items with real `rs_*` ids and
+  `encryptedContent` into `state.json`, and the SDK echoes them back as
+  `encrypted_content` on subsequent turns. Verified harmless for
+  Anthropic-routed (signature-carrying reasoning items, unaffected) and
+  Gemini-routed (provider-native encrypted thought-signature items) models.
+
+  Known limitation (server-side, not fixable in this repo): when OpenRouter
+  server tools (`openrouter:datetime` / `openrouter:web_search` /
+  `openrouter:web_fetch`) are present in the request — the harness default
+  unless `disableServerTools: true` — OpenRouter's server-side tool
+  orchestration strips native reasoning payloads and synthesizes `rs_tmp_*`
+  ids regardless of `include`. Runs with `disableServerTools: true` get the
+  full benefit today; server-tool runs start benefiting automatically once
+  OpenRouter honors `include` in that path.
+
 ## [0.2.1] - 2025-07-15
 
 ### Fixed

@@ -1834,6 +1834,25 @@ describe('OpenRouterAgentRun constructor options', () => {
     expect(DEFAULT_INSTRUCTIONS).toMatch(/code editing agent/i);
   });
 
+  it('requests encrypted reasoning content on every callModel', async () => {
+    callModelMock.mockImplementation(
+      fakeCallModel({
+        events: [
+          { type: 'turn.start', turnNumber: 0 },
+          { type: 'turn.end', turnNumber: 0 },
+        ],
+      }),
+    );
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.include).toStrictEqual(['reasoning.encrypted_content']);
+  });
+
   it('omits serverURL on the OR client when baseUrl is unset', async () => {
     callModelMock.mockImplementation(
       fakeCallModel({
