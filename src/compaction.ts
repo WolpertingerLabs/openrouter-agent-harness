@@ -79,18 +79,34 @@ export const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.fr
 });
 
 /**
- * Resolve the context-window size (in tokens) for a given model id. Tries the
- * id verbatim, then with a leading `~` (OR alias marker) stripped. Falls back
- * to {@link DEFAULT_CONTEXT_WINDOW_TOKENS} for unknown models.
+ * Resolve the context-window size (in tokens) for a given model id. Lookup
+ * order: caller-supplied `overrides` exact match → `overrides` with a
+ * leading `~` (OR alias marker) stripped → static
+ * {@link MODEL_CONTEXT_WINDOWS} exact match → static table alias → the
+ * {@link DEFAULT_CONTEXT_WINDOW_TOKENS} fallback. Overrides let a host
+ * teach the harness about models the shipped table doesn't know (or correct
+ * stale entries) per run — see
+ * {@link import('./agent.js').OpenRouterAgentRunOptions.modelContextWindows}.
  *
  * Exported so consumers can pre-compute a sensible `compactionThreshold` for
  * a model whose default they want to override, without re-deriving the table.
  */
-export function getModelContextWindow(model: string): number {
+export function getModelContextWindow(
+  model: string,
+  overrides?: Readonly<Record<string, number>>,
+): number {
+  const stripped = model.startsWith('~') ? model.slice(1) : undefined;
+  if (overrides !== undefined) {
+    const overrideExact = overrides[model];
+    if (overrideExact !== undefined) return overrideExact;
+    if (stripped !== undefined) {
+      const overrideAliased = overrides[stripped];
+      if (overrideAliased !== undefined) return overrideAliased;
+    }
+  }
   const exact = MODEL_CONTEXT_WINDOWS[model];
   if (exact !== undefined) return exact;
-  if (model.startsWith('~')) {
-    const stripped = model.slice(1);
+  if (stripped !== undefined) {
     const aliased = MODEL_CONTEXT_WINDOWS[stripped];
     if (aliased !== undefined) return aliased;
   }
@@ -99,40 +115,82 @@ export function getModelContextWindow(model: string): number {
 
 /**
  * Resolve the threshold (in **characters**, not tokens) that triggers
- * auto-compaction. Caller-supplied `configured` wins outright — it is
- * interpreted as a raw character count so consumers can opt out of the
- * char-per-token translation entirely. When omitted, the threshold is
- * `getModelContextWindow(model) * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO`.
+ * auto-compaction under the default chars/4 heuristic. Caller-supplied
+ * `configured` wins outright — it is interpreted as a raw character count so
+ * consumers can opt out of the char-per-token translation entirely. When
+ * omitted, the threshold is `getModelContextWindow(model, overrides) *
+ * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO`.
  */
 export function resolveCompactionThresholdChars(
   configured: number | undefined,
   model: string,
+  overrides?: Readonly<Record<string, number>>,
 ): number {
   if (configured !== undefined) return configured;
-  return Math.floor(getModelContextWindow(model) * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO);
+  return Math.floor(
+    getModelContextWindow(model, overrides) * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO,
+  );
 }
 
 /**
- * Char-length heuristic for the SDK's `ConversationState.messages` field
- * (`InputsUnion`). Accepts either the raw string form or the array form;
- * arrays are JSON-serialized per-item (cheap enough at compaction scale —
- * runs once per turn boundary at most). Non-message inputs (`null`,
- * `undefined`, anything else) return `0`.
+ * Resolve the threshold (in **tokens**) that triggers auto-compaction when a
+ * real `tokenCounter` is wired (see
+ * {@link import('./agent.js').OpenRouterAgentRunOptions.tokenCounter}).
+ * Caller-supplied `configured` wins outright — under token accounting the
+ * run's `compactionThreshold` is REINTERPRETED as a token count (the
+ * char-count reading only applies to the heuristic path). When omitted, the
+ * threshold is `floor(getModelContextWindow(model, overrides) *
+ * DEFAULT_THRESHOLD_RATIO)` — no chars-per-token translation, because the
+ * comparison side is already a real token count.
  */
-export function estimateMessagesCharLength(messages: unknown): number {
-  if (typeof messages === 'string') return messages.length;
-  if (!Array.isArray(messages)) return 0;
-  let total = 0;
+export function resolveCompactionThresholdTokens(
+  configured: number | undefined,
+  model: string,
+  overrides?: Readonly<Record<string, number>>,
+): number {
+  if (configured !== undefined) return configured;
+  return Math.floor(getModelContextWindow(model, overrides) * DEFAULT_THRESHOLD_RATIO);
+}
+
+/**
+ * Canonical serialization of the SDK's `ConversationState.messages` field
+ * (`InputsUnion`) for size estimation. The raw string form passes through
+ * verbatim; the array form concatenates each item's `JSON.stringify` (cheap
+ * enough at compaction scale — runs once per run boundary at most);
+ * non-message inputs (`null`, `undefined`, anything else) serialize to `''`.
+ *
+ * Shared by BOTH accounting paths so they measure exactly the same bytes:
+ * {@link estimateMessagesCharLength} takes this string's length (the chars/4
+ * heuristic), and the agent's `tokenCounter` hook receives this string
+ * verbatim for real token counting.
+ */
+export function serializeMessagesForEstimate(messages: unknown): string {
+  if (typeof messages === 'string') return messages;
+  if (!Array.isArray(messages)) return '';
+  let out = '';
   for (const msg of messages) {
     try {
-      total += JSON.stringify(msg).length;
+      const piece = JSON.stringify(msg);
+      // JSON.stringify(undefined) returns undefined (not a string) — skip,
+      // matching the historical "contributes nothing" behavior.
+      if (typeof piece === 'string') out += piece;
     } catch {
-      // Cyclic or unserializable items contribute nothing to the heuristic —
+      // Cyclic or unserializable items contribute nothing to the estimate —
       // they can't have come from the SDK's own message store, so this is a
       // defensive guard for hand-crafted state in tests.
     }
   }
-  return total;
+  return out;
+}
+
+/**
+ * Char-length heuristic for the SDK's `ConversationState.messages` field —
+ * the length of {@link serializeMessagesForEstimate}'s output. Kept as a
+ * named export (rather than inlining `.length` at call sites) for back-compat
+ * and so the heuristic reads symmetrically with the tokenizer path.
+ */
+export function estimateMessagesCharLength(messages: unknown): number {
+  return serializeMessagesForEstimate(messages).length;
 }
 
 /**

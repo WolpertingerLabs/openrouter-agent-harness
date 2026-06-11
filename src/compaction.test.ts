@@ -10,6 +10,8 @@ import {
   getModelContextWindow,
   partitionMessages,
   resolveCompactionThresholdChars,
+  resolveCompactionThresholdTokens,
+  serializeMessagesForEstimate,
 } from './compaction.js';
 
 describe('COMPACTION_PROMPT', () => {
@@ -49,6 +51,58 @@ describe('getModelContextWindow', () => {
     // '~unknown/model' → 'unknown/model' is also unknown → fallback
     expect(getModelContextWindow('~unknown/model')).toBe(DEFAULT_CONTEXT_WINDOW_TOKENS);
   });
+
+  describe('per-run overrides', () => {
+    it('an override exact match beats the static table', () => {
+      expect(
+        getModelContextWindow('anthropic/claude-sonnet-4.6', {
+          'anthropic/claude-sonnet-4.6': 1_000_000,
+        }),
+      ).toBe(1_000_000);
+    });
+
+    it("an override '~'-stripped alias match beats the static table's exact match", () => {
+      // Full resolution order: override exact → override alias → static
+      // exact → static alias → default. The override table only knows the
+      // un-aliased id; the static table knows BOTH — the override alias
+      // must still win.
+      expect(
+        getModelContextWindow('~anthropic/claude-sonnet-latest', {
+          'anthropic/claude-sonnet-latest': 999,
+        }),
+      ).toBe(999);
+    });
+
+    it('an override exact match on an aliased id beats the override alias entry', () => {
+      expect(
+        getModelContextWindow('~anthropic/claude-sonnet-latest', {
+          '~anthropic/claude-sonnet-latest': 111,
+          'anthropic/claude-sonnet-latest': 222,
+        }),
+      ).toBe(111);
+    });
+
+    it('falls through to the static table when the overrides do not match', () => {
+      expect(getModelContextWindow('anthropic/claude-sonnet-4.6', { 'other/model': 5 })).toBe(
+        200_000,
+      );
+      expect(getModelContextWindow('~anthropic/claude-sonnet-latest', { 'other/model': 5 })).toBe(
+        MODEL_CONTEXT_WINDOWS['anthropic/claude-sonnet-latest'],
+      );
+    });
+
+    it('falls through overrides AND the static table to the default for unknown models', () => {
+      expect(getModelContextWindow('new-vendor/new-model', { 'other/model': 5 })).toBe(
+        DEFAULT_CONTEXT_WINDOW_TOKENS,
+      );
+    });
+
+    it('teaches the table about a model it does not know', () => {
+      expect(
+        getModelContextWindow('new-vendor/new-model', { 'new-vendor/new-model': 32_768 }),
+      ).toBe(32_768);
+    });
+  });
 });
 
 describe('resolveCompactionThresholdChars', () => {
@@ -75,6 +129,72 @@ describe('resolveCompactionThresholdChars', () => {
       DEFAULT_CONTEXT_WINDOW_TOKENS * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO,
     );
     expect(resolveCompactionThresholdChars(undefined, 'unknown/whatever')).toBe(expected);
+  });
+
+  it('threads per-run window overrides into the derived default', () => {
+    const expected = Math.floor(1_000 * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO);
+    expect(
+      resolveCompactionThresholdChars(undefined, 'custom/model', { 'custom/model': 1_000 }),
+    ).toBe(expected);
+  });
+});
+
+describe('resolveCompactionThresholdTokens', () => {
+  it('returns the caller-supplied value verbatim when provided (reinterpreted as tokens)', () => {
+    expect(resolveCompactionThresholdTokens(50_000, 'anthropic/claude-sonnet-4.6')).toBe(50_000);
+  });
+
+  it('uses zero verbatim — does not treat 0 as "unset"', () => {
+    expect(resolveCompactionThresholdTokens(0, 'anthropic/claude-sonnet-4.6')).toBe(0);
+  });
+
+  it('derives floor(window * ratio) with NO chars-per-token translation when omitted', () => {
+    const tokens = getModelContextWindow('anthropic/claude-sonnet-4.6');
+    expect(resolveCompactionThresholdTokens(undefined, 'anthropic/claude-sonnet-4.6')).toBe(
+      Math.floor(tokens * DEFAULT_THRESHOLD_RATIO),
+    );
+  });
+
+  it('threads per-run window overrides into the derived default', () => {
+    expect(
+      resolveCompactionThresholdTokens(undefined, 'custom/model', { 'custom/model': 10_000 }),
+    ).toBe(Math.floor(10_000 * DEFAULT_THRESHOLD_RATIO));
+  });
+});
+
+describe('serializeMessagesForEstimate', () => {
+  it('passes a string messages field through verbatim', () => {
+    expect(serializeMessagesForEstimate('raw input')).toBe('raw input');
+  });
+
+  it("serializes the array form as each item's JSON, concatenated", () => {
+    const items = [
+      { role: 'user', content: 'a' },
+      { role: 'assistant', content: 'bb' },
+    ];
+    expect(serializeMessagesForEstimate(items)).toBe(
+      JSON.stringify(items[0]) + JSON.stringify(items[1]),
+    );
+  });
+
+  it("returns '' for null / undefined / non-array / non-string", () => {
+    expect(serializeMessagesForEstimate(null)).toBe('');
+    expect(serializeMessagesForEstimate(undefined)).toBe('');
+    expect(serializeMessagesForEstimate(42)).toBe('');
+  });
+
+  it('skips cyclic and undefined-serializing items rather than throwing', () => {
+    const cyclic: Record<string, unknown> = { role: 'user' };
+    cyclic.self = cyclic;
+    // `undefined` array items JSON.stringify to the string 'null'; a bare
+    // function serializes to undefined (not a string) and must be skipped.
+    const items = [{ role: 'user', content: 'ok' }, cyclic, () => 'fn'];
+    expect(serializeMessagesForEstimate(items)).toBe(JSON.stringify(items[0]));
+  });
+
+  it('estimateMessagesCharLength is exactly the serialized length (shared serialization)', () => {
+    const items = [{ role: 'user', content: 'measure me' }];
+    expect(estimateMessagesCharLength(items)).toBe(serializeMessagesForEstimate(items).length);
   });
 });
 
