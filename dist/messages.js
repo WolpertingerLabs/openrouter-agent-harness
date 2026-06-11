@@ -4,6 +4,12 @@
  *
  * Aggregation rules:
  * - `session_started` → emit `SystemMessage{session_start}`.
+ * - `reasoning_delta` → buffer into the current {@link AssistantMessage}'s
+ *   open {@link ThinkingContent} (concatenated). A `text_delta` or
+ *   `tool_call` closes the open thinking block, so a later burst of
+ *   reasoning opens a fresh one — content blocks stay in event order, and
+ *   since reasoning streams before visible output, thinking precedes the
+ *   text/tool blocks it led to (Claude-SDK thinking-block parity).
  * - `text_delta` → buffer into the current {@link AssistantMessage}'s open
  *   {@link TextContent} (concatenated). If a `tool_use` was the last content
  *   pushed, a fresh `TextContent` is opened — the assistant message ends up
@@ -37,16 +43,19 @@ export async function* aggregateMessages(events, fallbackSessionId) {
     let sessionId;
     let openAssistant = null;
     let openText = null;
+    let openThinking = null;
     const flushOpenAssistant = () => {
         const flushed = openAssistant && openAssistant.content.length > 0 ? openAssistant : null;
         openAssistant = null;
         openText = null;
+        openThinking = null;
         return flushed;
     };
     const ensureAssistant = () => {
         if (!openAssistant) {
             openAssistant = { type: 'assistant', content: [] };
             openText = null;
+            openThinking = null;
         }
         return openAssistant;
     };
@@ -57,6 +66,18 @@ export async function* aggregateMessages(events, fallbackSessionId) {
                 yield { type: 'system', subtype: 'session_start', sessionId };
                 break;
             }
+            case 'reasoning_delta': {
+                const assistant = ensureAssistant();
+                if (!openThinking) {
+                    openThinking = { type: 'thinking', thinking: '' };
+                    assistant.content.push(openThinking);
+                }
+                openThinking.thinking += event.content;
+                // Close any open TextContent so text arriving after this reasoning
+                // burst opens a fresh block — content stays in strict event order.
+                openText = null;
+                break;
+            }
             case 'text_delta': {
                 const assistant = ensureAssistant();
                 if (!openText) {
@@ -64,6 +85,9 @@ export async function* aggregateMessages(events, fallbackSessionId) {
                     assistant.content.push(openText);
                 }
                 openText.text += event.content;
+                // Close any open ThinkingContent — a later burst of reasoning within
+                // the same turn opens a fresh thinking block after this text.
+                openThinking = null;
                 break;
             }
             case 'tool_call': {
@@ -74,9 +98,10 @@ export async function* aggregateMessages(events, fallbackSessionId) {
                     name: event.name,
                     input: event.input,
                 });
-                // Force a fresh TextContent to be opened if more text arrives after
-                // this tool call within the same turn (Claude-SDK parity).
+                // Force fresh Text/Thinking blocks to be opened if more deltas arrive
+                // after this tool call within the same turn (Claude-SDK parity).
                 openText = null;
+                openThinking = null;
                 break;
             }
             case 'tool_result': {

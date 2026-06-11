@@ -147,6 +147,70 @@ export interface OpenRouterAgentRunOptions {
      */
     transientRetryBaseDelayMs?: number;
     /**
+     * Hung-stream watchdog: when the SSE event stream produces NO events for
+     * this many milliseconds while NO client tool execution is in flight, the
+     * cycle fails with a {@link StreamStallError}. Dead upstream connections
+     * otherwise hang a run forever — the OR Responses wire is unidirectional
+     * SSE with no heartbeat, so a silently dropped connection produces no
+     * error, no close, and no further events.
+     *
+     * Tool executions legitimately silence the stream (a 5-minute `bash` run
+     * emits no SSE traffic while it works), so the stall clock is suspended
+     * while any client tool's execute is in flight and resets when it
+     * settles. The watchdog covers only the active stream drain — it is not
+     * armed between cycles or during the post-stream response fetch.
+     *
+     * A stall is classified as TRANSIENT: the bounded retry machinery
+     * ({@link maxTransientRetries} / {@link transientRetryBaseDelayMs})
+     * tears down the dead stream and re-issues the cycle with the usual
+     * backoff, so a single dropped connection self-heals. With retries
+     * exhausted (or disabled) the run ends with `stream_complete{status:
+     * 'error'}` carrying the stall reason.
+     *
+     * Inherited by spawned subagents. Set `0` to disable stall detection
+     * entirely. Defaults to {@link DEFAULT_STREAM_STALL_TIMEOUT_MS} = 120_000
+     * (2 minutes).
+     */
+    streamStallTimeoutMs?: number;
+    /**
+     * Per-tool execute deadline in milliseconds. When a client tool's
+     * `execute` has not settled after this long, the harness stops waiting
+     * and surfaces the timeout as the tool result: the wrapper throws
+     * `JSON.stringify({ error: 'tool <name> timed out after <N>ms',
+     * timedOut: true })` — mirroring the `canUseTool` deny convention — so
+     * the SDK emits a normal `function_call_output` envelope and the
+     * consumer sees `tool_result.isError: true` with a machine-checkable
+     * `timedOut` marker after a double `JSON.parse`. The run continues; the
+     * model can react to the failure.
+     *
+     * Exempt tools (never wrapped):
+     * - `bash` — has its own timeout with a model-controllable `timeout_ms`
+     *   input field (default 30s, clamped to 10 min).
+     * - `spawn_subagent` / `spawn_subagents` — long-running by design;
+     *   subagents are bounded by their own `maxTurns` / `maxBudgetUsd`.
+     * - `ask_user_question` — blocks on a HUMAN answering via the host's
+     *   `onAskUserQuestion` handler; a person stepping away for lunch is not
+     *   a tool failure.
+     * - `monitor` — waits on external output by design and carries its own
+     *   `max_duration_ms` input (default 60s, clamped to 10 min).
+     * - `skill` — `context: fork` skills drive an entire subagent run inside
+     *   their execute (bounded like spawned subagents).
+     * - MCP-bridged tools (names containing the `__` separator, i.e.
+     *   `<serverName>__<toolName>`) — external servers own their timeout
+     *   semantics.
+     *
+     * The wrapper composes INNERMOST (around the context-bound execute,
+     * inside the permission/hook wrappers) so `PostToolUse` and the
+     * `tool_result` both reflect the timeout error. Note: v1 does NOT cancel
+     * the underlying I/O — there is no abort-signal plumbing into the losing
+     * execute; the loop just stops waiting and the orphaned promise's later
+     * settlement is swallowed.
+     *
+     * Inherited by spawned subagents. Set `0` to disable the deadline.
+     * Defaults to {@link DEFAULT_TOOL_TIMEOUT_MS} = 60_000 (1 minute).
+     */
+    toolTimeoutMs?: number;
+    /**
      * Tool set passed to the model. Defaults to the built-in 12-client-tool set
      * bound to a {@link ToolContext} derived from the run's `cwd` and composite
      * AbortSignal; server tools (datetime/web_search/web_fetch) are injected via
@@ -407,15 +471,50 @@ export interface OpenRouterAgentRunOptions {
      */
     disableServerTools?: boolean;
     /**
-     * Phase 5.1: character-count threshold that triggers an auto-compaction
-     * pass once the persisted `ConversationState.messages` array crosses it.
-     * Defaults to `getModelContextWindow(model) * 4 * 0.8` — i.e. ~80% of the
-     * model's token-budget converted to a conservative chars-per-token
-     * estimate. Pass an explicit number to override the default for the run
-     * (interpreted as a raw character count, not a token count). Honoured only
-     * when {@link autoCompact} is not `false`.
+     * Phase 5.1: threshold that triggers an auto-compaction pass once the
+     * persisted `ConversationState.messages` array crosses it.
+     *
+     * **Unit depends on {@link tokenCounter}.** Without a `tokenCounter`
+     * (the back-compat default), the value is a raw CHARACTER count compared
+     * against the serialized message history, defaulting to
+     * `getModelContextWindow(model, modelContextWindows) * 4 * 0.8` — i.e.
+     * ~80% of the model's token budget converted at the conservative
+     * chars-per-token ratio. With a `tokenCounter` supplied, the value is a
+     * TOKEN count compared against the counter's output, defaulting to
+     * `floor(getModelContextWindow(model, modelContextWindows) * 0.8)`.
+     *
+     * Honoured only when {@link autoCompact} is not `false`.
      */
     compactionThreshold?: number;
+    /**
+     * Per-run overrides for the static {@link MODEL_CONTEXT_WINDOWS} table
+     * used to derive the default {@link compactionThreshold}. Keys are model
+     * ids; values are context-window sizes in TOKENS. Resolution order:
+     * override exact match → override with the `~` alias prefix stripped →
+     * static-table exact match → static-table alias →
+     * `DEFAULT_CONTEXT_WINDOW_TOKENS` (128k). Lets hosts teach the harness
+     * about models the shipped table doesn't know (or correct entries that
+     * drifted) without waiting for a library release. Inherited by spawned
+     * subagents. Defaults to undefined — the static table alone.
+     */
+    modelContextWindows?: Readonly<Record<string, number>>;
+    /**
+     * Real tokenizer hook for the auto-compaction estimate. When supplied,
+     * the post-run threshold check serializes the persisted message history
+     * (the same serialization the chars/4 heuristic measures — see
+     * {@link serializeMessagesForEstimate}), passes it to this callback, and
+     * compares the returned TOKEN count against a token threshold
+     * (`compactionThreshold` when set — reinterpreted as TOKENS — otherwise
+     * `floor(getModelContextWindow(model, modelContextWindows) * 0.8)`).
+     * Without it, the chars/4 heuristic and character thresholds apply
+     * (back-compat default).
+     *
+     * Must be synchronous and total: if the callback throws, the harness
+     * logs a `'warn'` via {@link logger} and falls back to the char
+     * heuristic for that check (the run never dies on a tokenizer bug).
+     * Inherited by spawned subagents.
+     */
+    tokenCounter?: (serializedMessages: string) => number;
     /**
      * Phase 5.1: number of trailing messages (NOT strict turns — see
      * {@link partitionMessages} JSDoc for the granularity note) preserved
@@ -698,6 +797,25 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      * decide how to recover.
      */
     compact(reason?: 'auto' | 'manual'): Promise<void>;
+    /**
+     * Decide whether the persisted message history has crossed the
+     * auto-compaction threshold. Two accounting modes share one serialization
+     * (see {@link serializeMessagesForEstimate} — both paths measure exactly
+     * the same string):
+     *
+     * - **Token mode** — when {@link OpenRouterAgentRunOptions.tokenCounter}
+     *   is set, the counter's output is compared against a TOKEN threshold:
+     *   `compactionThreshold` verbatim when configured (reinterpreted as
+     *   tokens), else `floor(getModelContextWindow(model, modelContextWindows)
+     *   * DEFAULT_THRESHOLD_RATIO)`. A throwing counter logs a `'warn'` and
+     *   falls through to char mode for this check — a tokenizer bug must
+     *   never kill a run that was otherwise healthy.
+     * - **Char mode** (default) — serialized length vs.
+     *   {@link resolveCompactionThresholdChars} (the v1 chars/4 heuristic),
+     *   with the same per-run {@link OpenRouterAgentRunOptions.modelContextWindows}
+     *   overrides applied to the window lookup.
+     */
+    private isOverCompactionThreshold;
     /**
      * Abort the in-flight run. Fires the run's internal AbortController, which
      * triggers cancellation of the OR stream and any in-flight tool execution.

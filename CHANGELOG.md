@@ -9,6 +9,91 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`reasoning_delta` core event — live reasoning/thinking streaming.**
+  Reasoning models that stream plaintext reasoning over the OR Responses
+  wire (`response.reasoning_text.delta` SSE events) now surface it live:
+  the agent loop yields a new `{ type: 'reasoning_delta', content }`
+  `AgentCoreEvent` for each delta (Claude-SDK thinking-delta parity).
+  Encrypted reasoning items carry no delta on the wire and produce no
+  events; empty deltas are dropped and post-abort deltas filtered, matching
+  `text_delta`. The rich message stream (`run.messages()`) aggregates
+  contiguous reasoning deltas into a new `ThinkingContent`
+  (`{ type: 'thinking', thinking }`) block on the open `AssistantMessage`,
+  in strict event order — since reasoning streams before visible output,
+  thinking blocks precede the text/tool blocks they led to. Subagent
+  result text (`SubagentResultSummary.text` / the parent's
+  `spawn_subagent` tool_result) intentionally remains visible-text-only.
+  Covered by `src/agent.streaming.test.ts` + `src/messages.test.ts`.
+
+- **`streamStallTimeoutMs` — hung-stream watchdog (default 2 min).**
+  A silently dropped SSE connection used to hang a run forever: the OR
+  Responses wire is unidirectional with no heartbeat, so a dead upstream
+  produces no error, no close, no events. The new per-cycle watchdog
+  (`src/stall.ts`: `createStallMonitor` + `monitorStream`) races each
+  stream pull against a re-arming timer; when NO events arrive for
+  `streamStallTimeoutMs` while NO client tool execute is in flight, the
+  cycle fails with the new exported `StreamStallError` (carries
+  `stallTimeoutMs`). Tool executions legitimately silence the stream, so
+  an unconditional outermost tool wrapper tracks in-flight executes
+  (every path: built-ins, custom tools, MCP-bridge tools) and suspends
+  the clock — a 5-minute `bash` run never trips it. On stall the dead
+  SDK stream is cancelled and the error is classified TRANSIENT, so the
+  bounded retry/backoff (`maxTransientRetries`) re-issues the cycle with
+  a fresh monitor; exhausted retries surface `error` +
+  `stream_complete{status:'error'}` with the stall reason. The orphaned
+  iterator pull is catch-drained (no `unhandledRejection`), timers are
+  unref'd and disposed in a finally, and the watchdog is never armed
+  during the post-stream response fetch. Constructor option; `0`
+  disables; inherited by spawned subagents. Covered by
+  `src/stall.test.ts` + `src/agent.stall.test.ts` (fake timers).
+
+- **`toolTimeoutMs` — per-tool execute deadline (default 1 min).**
+  A client tool whose `execute` never settles used to wedge the run (the
+  SDK awaits tool results before continuing the turn). The harness now
+  races every non-exempt client tool execute against a deadline; on
+  timeout it throws `JSON.stringify({ error: 'tool <name> timed out
+after <N>ms', timedOut: true })` — mirroring the `canUseTool` deny
+  convention — so the SDK emits a normal error-enveloped
+  `function_call_output`, `detectToolResultIsError` flags it, and the
+  run continues with the model seeing the failure. The wrapper composes
+  INNERMOST (inside permission/hook wrappers) so `PostToolUse` and the
+  `tool_result` both reflect the timeout. Exempt: `bash` and `monitor`
+  (own model-controllable `timeout_ms` / `max_duration_ms`),
+  `spawn_subagent`/`spawn_subagents` (long-running by design),
+  `ask_user_question` (blocks on a human answering),
+  `skill` (fork-context skills run a subagent inside execute), and
+  MCP-bridged tools (`<server>__<tool>`
+  names — external servers own their semantics). The losing execute's
+  underlying I/O is NOT cancelled in v1 (no signal plumbing) — the loop
+  just stops waiting, and the orphaned promise's settlement is
+  swallowed. Constructor option; `0` disables; inherited by spawned
+  subagents. Covered by `src/agent.tool-timeout.test.ts` (fake timers).
+
+- **Compaction accounting options: `modelContextWindows` + `tokenCounter`.**
+  Two knobs make the Phase 5.1 auto-compaction estimate accurate for
+  models/tokenizers the harness doesn't know:
+  - `modelContextWindows?: Record<string, number>` — per-run overrides
+    merged over the static `MODEL_CONTEXT_WINDOWS` table.
+    `getModelContextWindow(model, overrides?)` now resolves: override
+    exact → override `~`-stripped alias → static exact → static alias →
+    `DEFAULT_CONTEXT_WINDOW_TOKENS`. Threaded through both threshold
+    resolvers and the agent's auto-compact call site.
+  - `tokenCounter?: (serializedMessages: string) => number` — real
+    tokenizer hook. When set, the auto-compaction check serializes the
+    persisted history via the new shared
+    `serializeMessagesForEstimate(messages)` (the exact string the
+    chars/4 heuristic measures — `estimateMessagesCharLength` is now its
+    `.length`), passes it to the counter, and compares against a TOKEN
+    threshold from the new `resolveCompactionThresholdTokens(configured,
+model, overrides?)` (`configured ?? floor(window * 0.8)`).
+    **`compactionThreshold` is reinterpreted as TOKENS when
+    `tokenCounter` is set; without it the historical CHARS reading is
+    unchanged (back-compat).** A throwing counter logs a `warn` and
+    falls back to the char heuristic for that check.
+
+  Both options are inherited by spawned subagents. Covered by
+  `src/compaction.test.ts` + `src/__tests__/integration/compaction.test.ts`.
+
 - **Surface OpenRouter server tools (`openrouter:datetime` / `web_search` /
   `web_fetch`) as first-class events and transcript records.** Server tools are
   injected into the request and executed on OpenRouter's servers, returning a

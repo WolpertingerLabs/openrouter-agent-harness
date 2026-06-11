@@ -9,6 +9,20 @@ import type { AgentCoreEvent, AgentCoreEventStatus, TokenUsage } from './events.
 export type TextContent = { type: 'text'; text: string };
 
 /**
+ * Reasoning/thinking text emitted by a reasoning model. Carries the
+ * concatenation of every contiguous `reasoning_delta` event observed within a
+ * single turn — mirroring the Claude SDK's `thinking` content block shape
+ * (`{ type: 'thinking', thinking: string }`) so consumers porting message
+ * handlers between SDKs can reuse their narrowing. Reasoning deltas arrive on
+ * the wire BEFORE the turn's visible text, so a thinking block always
+ * precedes the {@link TextContent} it led to within the same
+ * {@link AssistantMessage} (matching how a transcript renders reasoning →
+ * tool_use → text). Plaintext reasoning only — encrypted reasoning items
+ * produce no deltas, hence no thinking block.
+ */
+export type ThinkingContent = { type: 'thinking'; thinking: string };
+
+/**
  * Model-issued tool invocation. `id` is the underlying SDK `callId`; `input`
  * mirrors the parsed JSON arguments from the matching `tool_call`
  * {@link import('./events.js').AgentCoreEvent} (falling back to the raw string
@@ -42,17 +56,20 @@ export type SystemMessage = {
 
 /**
  * Aggregated per-turn assistant message. A single message buffers ALL
- * `text_delta`s and `tool_call`s observed within one turn — the order of the
- * `content` array preserves the order the events were yielded (so a turn that
- * emits text then a tool call appears as `[TextContent, ToolUseContent]`, and
- * a tool-only turn appears as `[ToolUseContent]` with no `TextContent`).
+ * `reasoning_delta`s, `text_delta`s, and `tool_call`s observed within one
+ * turn — the order of the `content` array preserves the order the events
+ * were yielded (so a turn that thinks, then emits text, then a tool call
+ * appears as `[ThinkingContent, TextContent, ToolUseContent]`; a tool-only
+ * turn appears as `[ToolUseContent]` with neither text nor thinking).
+ * Because reasoning streams before visible output, thinking blocks naturally
+ * precede the text/tool blocks they led to.
  *
- * Turns that produce neither text nor tool calls yield no `AssistantMessage`
- * (empty messages are suppressed).
+ * Turns that produce no thinking, text, or tool calls yield no
+ * `AssistantMessage` (empty messages are suppressed).
  */
 export type AssistantMessage = {
   type: 'assistant';
-  content: Array<TextContent | ToolUseContent>;
+  content: Array<ThinkingContent | TextContent | ToolUseContent>;
 };
 
 /**
@@ -96,6 +113,12 @@ export type AgentMessage = SystemMessage | AssistantMessage | UserMessage | Resu
  *
  * Aggregation rules:
  * - `session_started` → emit `SystemMessage{session_start}`.
+ * - `reasoning_delta` → buffer into the current {@link AssistantMessage}'s
+ *   open {@link ThinkingContent} (concatenated). A `text_delta` or
+ *   `tool_call` closes the open thinking block, so a later burst of
+ *   reasoning opens a fresh one — content blocks stay in event order, and
+ *   since reasoning streams before visible output, thinking precedes the
+ *   text/tool blocks it led to (Claude-SDK thinking-block parity).
  * - `text_delta` → buffer into the current {@link AssistantMessage}'s open
  *   {@link TextContent} (concatenated). If a `tool_use` was the last content
  *   pushed, a fresh `TextContent` is opened — the assistant message ends up
@@ -132,17 +155,20 @@ export async function* aggregateMessages(
   let sessionId: string | undefined;
   let openAssistant: AssistantMessage | null = null;
   let openText: TextContent | null = null;
+  let openThinking: ThinkingContent | null = null;
 
   const flushOpenAssistant = (): AssistantMessage | null => {
     const flushed = openAssistant && openAssistant.content.length > 0 ? openAssistant : null;
     openAssistant = null;
     openText = null;
+    openThinking = null;
     return flushed;
   };
   const ensureAssistant = (): AssistantMessage => {
     if (!openAssistant) {
       openAssistant = { type: 'assistant', content: [] };
       openText = null;
+      openThinking = null;
     }
     return openAssistant;
   };
@@ -154,6 +180,18 @@ export async function* aggregateMessages(
         yield { type: 'system', subtype: 'session_start', sessionId };
         break;
       }
+      case 'reasoning_delta': {
+        const assistant = ensureAssistant();
+        if (!openThinking) {
+          openThinking = { type: 'thinking', thinking: '' };
+          assistant.content.push(openThinking);
+        }
+        openThinking.thinking += event.content;
+        // Close any open TextContent so text arriving after this reasoning
+        // burst opens a fresh block — content stays in strict event order.
+        openText = null;
+        break;
+      }
       case 'text_delta': {
         const assistant = ensureAssistant();
         if (!openText) {
@@ -161,6 +199,9 @@ export async function* aggregateMessages(
           assistant.content.push(openText);
         }
         openText.text += event.content;
+        // Close any open ThinkingContent — a later burst of reasoning within
+        // the same turn opens a fresh thinking block after this text.
+        openThinking = null;
         break;
       }
       case 'tool_call': {
@@ -171,9 +212,10 @@ export async function* aggregateMessages(
           name: event.name,
           input: event.input,
         });
-        // Force a fresh TextContent to be opened if more text arrives after
-        // this tool call within the same turn (Claude-SDK parity).
+        // Force fresh Text/Thinking blocks to be opened if more deltas arrive
+        // after this tool call within the same turn (Claude-SDK parity).
         openText = null;
+        openThinking = null;
         break;
       }
       case 'tool_result': {

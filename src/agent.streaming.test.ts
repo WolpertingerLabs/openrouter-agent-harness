@@ -646,6 +646,119 @@ describe('OpenRouterAgentRun — image attachments', () => {
   });
 });
 
+describe('OpenRouterAgentRun — reasoning deltas', () => {
+  it('yields reasoning_delta core events for response.reasoning_text.delta, skipping empty deltas', async () => {
+    scriptCallModel([
+      {
+        events: [
+          { type: 'turn.start', turnNumber: 0 },
+          // Shape mirrors the vendored SDK's ReasoningDeltaEvent.
+          {
+            type: 'response.reasoning_text.delta',
+            delta: 'let me ',
+            itemId: 'rs_1',
+            contentIndex: 0,
+            outputIndex: 0,
+            sequenceNumber: 1,
+          },
+          // Empty delta — must be skipped (parity with text_delta).
+          {
+            type: 'response.reasoning_text.delta',
+            delta: '',
+            itemId: 'rs_1',
+            contentIndex: 0,
+            outputIndex: 0,
+            sequenceNumber: 2,
+          },
+          {
+            type: 'response.reasoning_text.delta',
+            delta: 'think',
+            itemId: 'rs_1',
+            contentIndex: 0,
+            outputIndex: 0,
+            sequenceNumber: 3,
+          },
+          { type: 'response.output_text.delta', delta: 'the answer' },
+          { type: 'turn.end', turnNumber: 0 },
+        ],
+      },
+    ]);
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: TEST_SESSION,
+      prompt: 'reason it out',
+    });
+    const events = await collect(run);
+
+    const sequence = events
+      .filter(
+        (e): e is Extract<AgentCoreEvent, { type: 'reasoning_delta' | 'text_delta' }> =>
+          e.type === 'reasoning_delta' || e.type === 'text_delta',
+      )
+      .map((e) => [e.type, e.content]);
+    // Two reasoning deltas (empty one dropped) arrive BEFORE the text delta,
+    // preserving wire order.
+    expect(sequence).toEqual([
+      ['reasoning_delta', 'let me '],
+      ['reasoning_delta', 'think'],
+      ['text_delta', 'the answer'],
+    ]);
+    const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
+    expect(complete.status).toBe('success');
+  });
+
+  it('drops reasoning deltas after abort (same post-abort filter as text deltas)', async () => {
+    const controller = new AbortController();
+    callModelMock.mockImplementation(() => ({
+      async *getFullResponsesStream(): AsyncGenerator<unknown> {
+        yield { type: 'turn.start', turnNumber: 0 };
+        yield {
+          type: 'response.reasoning_text.delta',
+          delta: 'pre-abort thought',
+          itemId: 'rs_1',
+          contentIndex: 0,
+          outputIndex: 0,
+          sequenceNumber: 1,
+        };
+        controller.abort();
+        yield {
+          type: 'response.reasoning_text.delta',
+          delta: 'post-abort thought',
+          itemId: 'rs_1',
+          contentIndex: 0,
+          outputIndex: 0,
+          sequenceNumber: 2,
+        };
+      },
+      async getResponse() {
+        return { id: 'r', model: 'm', usage: { cost: 0 }, output: [] };
+      },
+      async cancel() {
+        return;
+      },
+    }));
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: TEST_SESSION,
+      prompt: 'q',
+      signal: controller.signal,
+    });
+    const events = await collect(run);
+
+    const reasoning = events
+      .filter(
+        (e): e is Extract<AgentCoreEvent, { type: 'reasoning_delta' }> =>
+          e.type === 'reasoning_delta',
+      )
+      .map((e) => e.content);
+    expect(reasoning).toEqual(['pre-abort thought']);
+    const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
+    expect(complete.reason).toBe('aborted');
+  });
+});
+
 describe('OpenRouterAgentRun — back-compat with string prompt', () => {
   it('still runs exactly one callModel cycle when prompt is a plain string and no pushes happen', async () => {
     scriptCallModel([

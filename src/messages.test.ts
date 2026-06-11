@@ -207,6 +207,75 @@ describe('aggregateMessages', () => {
     expect(msgs.map((m) => m.type)).toEqual(['system', 'result', 'system']);
   });
 
+  it('buffers reasoning_delta into a ThinkingContent block that precedes the turn text', async () => {
+    const events: AgentCoreEvent[] = [
+      { type: 'session_started', sessionId: 's' },
+      { type: 'turn_start', turnNumber: 0 },
+      { type: 'reasoning_delta', content: 'let me ' },
+      { type: 'reasoning_delta', content: 'think' },
+      { type: 'text_delta', content: 'the answer' },
+      { type: 'turn_end', turnNumber: 0, usage: null, costUsd: 0 },
+      { type: 'stream_complete', status: 'success' },
+    ];
+    const msgs = await collect(aggregateMessages(fromArray(events)));
+    const assistant = msgs.find((m) => m.type === 'assistant');
+    expect(assistant).toEqual({
+      type: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'let me think' },
+        { type: 'text', text: 'the answer' },
+      ],
+    });
+  });
+
+  it('emits a thinking-only AssistantMessage when a turn produces reasoning but no text or tools', async () => {
+    const events: AgentCoreEvent[] = [
+      { type: 'session_started', sessionId: 's' },
+      { type: 'turn_start', turnNumber: 0 },
+      { type: 'reasoning_delta', content: 'pure thought' },
+      { type: 'turn_end', turnNumber: 0, usage: null, costUsd: 0 },
+      { type: 'stream_complete', status: 'success' },
+    ];
+    const msgs = await collect(aggregateMessages(fromArray(events)));
+    const assistant = msgs.find((m) => m.type === 'assistant');
+    expect(assistant).toEqual({
+      type: 'assistant',
+      content: [{ type: 'thinking', thinking: 'pure thought' }],
+    });
+  });
+
+  it('keeps interleaved thinking/text/tool blocks in strict event order, reopening blocks after each switch', async () => {
+    const events: AgentCoreEvent[] = [
+      { type: 'session_started', sessionId: 's' },
+      { type: 'turn_start', turnNumber: 0 },
+      { type: 'reasoning_delta', content: 'plan A' },
+      { type: 'text_delta', content: 'first' },
+      // A later reasoning burst within the same turn opens a FRESH thinking
+      // block (the earlier one closed when text arrived)…
+      { type: 'reasoning_delta', content: 'plan B' },
+      // …and text after that reopens a fresh text block too.
+      { type: 'text_delta', content: 'second' },
+      // A tool call closes both open blocks.
+      { type: 'tool_call', callId: 'c1', name: 't', input: {} },
+      { type: 'reasoning_delta', content: 'post-tool thought' },
+      { type: 'turn_end', turnNumber: 0, usage: null, costUsd: 0 },
+      { type: 'stream_complete', status: 'success' },
+    ];
+    const msgs = await collect(aggregateMessages(fromArray(events)));
+    const assistant = msgs.find((m) => m.type === 'assistant');
+    expect(assistant).toEqual({
+      type: 'assistant',
+      content: [
+        { type: 'thinking', thinking: 'plan A' },
+        { type: 'text', text: 'first' },
+        { type: 'thinking', thinking: 'plan B' },
+        { type: 'text', text: 'second' },
+        { type: 'tool_use', id: 'c1', name: 't', input: {} },
+        { type: 'thinking', thinking: 'post-tool thought' },
+      ],
+    });
+  });
+
   it('uses the fallback sessionId for session_end when session_started was never observed', async () => {
     // Pre-aborted-at-construction shape: stream_complete only.
     const events: AgentCoreEvent[] = [

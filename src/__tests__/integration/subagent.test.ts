@@ -693,6 +693,59 @@ describe('integration: spawn_subagent via OpenRouterAgentRun', () => {
     }
   });
 
+  it('child inherits streamStallTimeoutMs / toolTimeoutMs / modelContextWindows / tokenCounter from the parent', async () => {
+    // Same prototype-spy capture as the Phase 4.8 inheritance test above —
+    // the child run is constructed inside agent.ts's runSubagent closure, so
+    // the resolved-opts snapshot is the cheapest observable. Covers the
+    // child-ctor wiring for all four reliability/compaction-accounting knobs
+    // (the two timeouts ride unconditionally as resolved numbers; the two
+    // compaction options ride conditional spreads).
+    type Iterable = { [Symbol.asyncIterator]: () => AsyncIterator<AgentCoreEvent> };
+    const proto = OpenRouterAgentRun.prototype as unknown as Iterable & {
+      opts: Record<string, unknown>;
+    };
+    const origIter = proto[Symbol.asyncIterator];
+    const capturedOpts: Array<Record<string, unknown>> = [];
+    proto[Symbol.asyncIterator] = function (this: { opts: Record<string, unknown> }) {
+      capturedOpts.push({ ...this.opts });
+      return origIter.call(this);
+    };
+
+    try {
+      state.fixtureQueue = [
+        parentFixtureCallingSubagent({ description: 'inherit reliability knobs' }),
+        childFixtureSimpleText(),
+      ];
+
+      const tokenCounter = (s: string): number => s.length;
+      const windows = { 'custom/model': 32_768 };
+      const parent = new OpenRouterAgentRun({
+        apiKey: 'sk-test',
+        sessionId: PARENT_SESSION,
+        prompt: 'verify reliability inheritance',
+        enableSubagents: true,
+        persistSession: false,
+        streamStallTimeoutMs: 45_000,
+        toolTimeoutMs: 5_000,
+        modelContextWindows: windows,
+        tokenCounter,
+      });
+
+      for await (const _ev of parent) {
+        void _ev;
+      }
+
+      expect(capturedOpts).toHaveLength(2);
+      const childOpts = capturedOpts[1]!;
+      expect(childOpts.streamStallTimeoutMs).toBe(45_000);
+      expect(childOpts.toolTimeoutMs).toBe(5_000);
+      expect(childOpts.modelContextWindows).toEqual(windows);
+      expect(childOpts.tokenCounter).toBe(tokenCounter);
+    } finally {
+      proto[Symbol.asyncIterator] = origIter;
+    }
+  });
+
   it('Phase 4.9: drives parallel spawn_subagents through the agent.ts wiring (lifecycle hooks fire for each child)', async () => {
     // Parent calls spawn_subagents (plural) with two specs. The agent.ts
     // wiring should register the plural tool when enableSubagents=true,

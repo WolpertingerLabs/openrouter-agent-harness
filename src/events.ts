@@ -8,6 +8,19 @@ export type AgentCoreEvent =
   | { type: 'session_started'; sessionId: string; parentSessionId?: string }
   | { type: 'turn_start'; turnNumber: number }
   | { type: 'text_delta'; content: string }
+  /**
+   * Live reasoning/thinking text streamed from a reasoning model — the
+   * harness's analogue of the Claude SDK's thinking deltas. Emitted for each
+   * `response.reasoning_text.delta` SSE event the OR Responses stream
+   * produces, in arrival order (reasoning deltas precede the turn's
+   * `text_delta`s on the wire). PLAINTEXT reasoning only: encrypted
+   * reasoning items (`encrypted_content` with no readable text, e.g. OpenAI
+   * store:false reasoning or Gemini thought signatures) never produce a
+   * delta on the wire, so there is nothing to surface for them — consumers
+   * must not assume every reasoning model yields these events. Empty deltas
+   * are dropped at the source (parity with `text_delta`).
+   */
+  | { type: 'reasoning_delta'; content: string }
   | { type: 'tool_call'; callId: string; name: string; input: unknown }
   | { type: 'tool_result'; callId: string; output: unknown; isError: boolean }
   | {
