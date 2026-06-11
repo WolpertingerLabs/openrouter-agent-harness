@@ -12,8 +12,8 @@
 
 v1 (Phase 5.1) is a clean, tested skeleton: pure-function partition/threshold helpers, a
 PreCompact hook, a transcript `compact` audit record, atomic fail-safe state writes, and
-correct `previousResponseId` / in-flight-field clearing. What it gets wrong is *when* it
-triggers, *where* it cuts, and *what happens when compaction itself fails*:
+correct `previousResponseId` / in-flight-field clearing. What it gets wrong is _when_ it
+triggers, _where_ it cuts, and _what happens when compaction itself fails_:
 
 1. **Run-boundary-only trigger** (`agent.ts` — `iterate()`'s `finally`). A single long
    agentic run can overflow the context window before the check ever fires. Cron-style
@@ -37,7 +37,7 @@ triggers, *where* it cuts, and *what happens when compaction itself fails*:
    `splitTurn` fallback. v1 has no boundary snapping — this is a latent correctness bug,
    not a tuning issue.
 5. **The summarizer can wedge the session permanently.** The summarize prefix (~80% of the
-   window, plus JSON overhead, in an underestimating currency) goes to the *same model* in
+   window, plus JSON overhead, in an underestimating currency) goes to the _same model_ in
    one shot. Past-threshold states make the summarizer call itself overflow; it then fails
    on every subsequent run end with no retry, no trimming, no circuit breaker. Codex drops
    the oldest history item and retries until it fits; Claude Code parses the exact token
@@ -54,12 +54,12 @@ triggers, *where* it cuts, and *what happens when compaction itself fails*:
 
 ### Field reference (verified values)
 
-| Harness | Trigger | Measurement | Keep verbatim | Failure handling |
-| --- | --- | --- | --- | --- |
-| Codex CLI | 90% of window (`context_window*9/10`, min'd with server limit); pre-turn, mid-turn, model-switch | Server-observed `token_usage` from `ResponseEvent::Completed` | User messages, newest-first, ≤20k tokens; summary appended as user msg | On overflow during compaction: drop oldest item, retry; normal-sampling overflow marks usage=full → next pre-turn compacts |
-| opencode | usage ≥ input_limit − reserved (min(20k, maxOutput)); per assistant msg | Real usage tokens (incl. cache read/write) | Token-budgeted tail: 25% of usable, clamped 2k–8k, at turn boundaries (`splitTurn` for oversized turns) | Prune tier first (protect last 2 turns + 40k); anchored incremental summary merges into `<previous-summary>` |
-| Gemini CLI | 50% of window, checked before every turn (`tryCompressChat`) | countTokens API | Last 30% by char share, boundary advanced past model/functionResponse items | Re-counts after compress; restores original if inflated; failed-attempt flag stops retry loops; lighter `CONTENT_TRUNCATED` fallback |
-| Claude Code | `(window − min(maxOutput, 20k)) − 13k` ≈ 83.5% on 200k; 10k-token floor | `usage` from latest API response; API error text is the ultimate oracle | Recent tail (partial-compact variants); re-reads 5 recent files from disk post-compact (5k/file, 50k cap) | Drop-oldest retry ≤3 seeded from exact token gap; 3-strike thrashing circuit breaker; 5-layer cheap→expensive pipeline before any LLM call |
+| Harness     | Trigger                                                                                          | Measurement                                                             | Keep verbatim                                                                                             | Failure handling                                                                                                                           |
+| ----------- | ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| Codex CLI   | 90% of window (`context_window*9/10`, min'd with server limit); pre-turn, mid-turn, model-switch | Server-observed `token_usage` from `ResponseEvent::Completed`           | User messages, newest-first, ≤20k tokens; summary appended as user msg                                    | On overflow during compaction: drop oldest item, retry; normal-sampling overflow marks usage=full → next pre-turn compacts                 |
+| opencode    | usage ≥ input_limit − reserved (min(20k, maxOutput)); per assistant msg                          | Real usage tokens (incl. cache read/write)                              | Token-budgeted tail: 25% of usable, clamped 2k–8k, at turn boundaries (`splitTurn` for oversized turns)   | Prune tier first (protect last 2 turns + 40k); anchored incremental summary merges into `<previous-summary>`                               |
+| Gemini CLI  | 50% of window, checked before every turn (`tryCompressChat`)                                     | countTokens API                                                         | Last 30% by char share, boundary advanced past model/functionResponse items                               | Re-counts after compress; restores original if inflated; failed-attempt flag stops retry loops; lighter `CONTENT_TRUNCATED` fallback       |
+| Claude Code | `(window − min(maxOutput, 20k)) − 13k` ≈ 83.5% on 200k; 10k-token floor                          | `usage` from latest API response; API error text is the ultimate oracle | Recent tail (partial-compact variants); re-reads 5 recent files from disk post-compact (5k/file, 50k cap) | Drop-oldest retry ≤3 seeded from exact token gap; 3-strike thrashing circuit breaker; 5-layer cheap→expensive pipeline before any LLM call |
 
 Common to all four: **structured summary schemas** (Claude Code's 9 numbered sections incl.
 "All user messages" and verbatim-quoted next step; Gemini's `<state_snapshot>` XML;
@@ -73,13 +73,13 @@ before `autoCompact` is relied on in production crons. Standard Phase 3+ workflo
 apply (fast-track merge, hard invariants, coverage ratchet — see
 [`claude-sdk-parity-roadmap.md`](./claude-sdk-parity-roadmap.md#workflow--gates)).
 
-| Card | Title                                                         | Est. | Depends on |
-| ---- | ------------------------------------------------------------- | ---- | ---------- |
-| 7.1  | Real-token trigger: mid-run check + dynamic context windows   | 8h   | —          |
-| 7.2  | Turn-boundary-safe partition + token-budgeted keep tail       | 5h   | —          |
-| 7.3  | Summarizer resilience: trim-retry, inflation check, breaker   | 6h   | 7.1 (soft) |
-| 7.4  | Tool-output prune tier (no-LLM microcompaction)               | 6h   | —          |
-| 7.5  | Summary quality & ergonomics                                  | 8h   | —          |
+| Card | Title                                                       | Est. | Depends on |
+| ---- | ----------------------------------------------------------- | ---- | ---------- |
+| 7.1  | Real-token trigger: mid-run check + dynamic context windows | 8h   | —          |
+| 7.2  | Turn-boundary-safe partition + token-budgeted keep tail     | 5h   | —          |
+| 7.3  | Summarizer resilience: trim-retry, inflation check, breaker | 6h   | 7.1 (soft) |
+| 7.4  | Tool-output prune tier (no-LLM microcompaction)             | 6h   | —          |
+| 7.5  | Summary quality & ergonomics                                | 8h   | —          |
 
 ### Card 7.1 — Real-token trigger: mid-run check + dynamic context windows (~8h)
 
@@ -90,7 +90,7 @@ inside the drain loop**, not just at run end.
   projects `usage.inputTokens` — see `toTranscriptUsage`) against a threshold of
   `contextWindow − outputReserve − safetyBuffer`. Adopt the absolute-buffer shape
   (Claude Code / opencode: ~20k output reserve) rather than the bare 0.8 ratio — the
-  reserve is what guarantees the *summarizer call* has room to respond.
+  reserve is what guarantees the _summarizer call_ has room to respond.
 - Mid-run compaction must cooperate with the SDK's in-memory `ConversationState` (the v1
   mid-iterate guard exists precisely because `compact()` races `state.save()`). Two
   acceptable shapes, decided at implementation time: (a) Codex-style mark-full → compact at
@@ -176,7 +176,7 @@ The cheapest intervention, run before full compaction is even considered.
   turn (contrast Gemini's per-turn masking, which their cache economics tolerate).
 - Skip-list for protected tools (opencode protects `skill`); spawned-subagent results
   configurable.
-- The message/tool-call *skeleton* stays intact — the model still sees the calls happened.
+- The message/tool-call _skeleton_ stays intact — the model still sees the calls happened.
 - Emits its own transcript record (`kind: 'prune'`?) + Notification hook for observability.
 
 ### Card 7.5 — Summary quality & ergonomics (~8h)
