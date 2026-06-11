@@ -13,7 +13,7 @@
  * passed via the `instructions` field.
  */
 export const COMPACTION_PROMPT =
-  'You are a context-compaction assistant. The user message is the JSON-encoded prefix of an ongoing conversation between a user and an AI coding agent (including tool calls and tool outputs) that has grown too long to keep in full. Summarize this prefix into a concise narrative that preserves: (1) the user goals and constraints, (2) decisions made and their rationale, (3) files, paths, and identifiers referenced, (4) any unresolved tasks. Omit verbose tool outputs that no longer matter. Return only the summary text — do not preface it with commentary, do not wrap it in markdown, do not include a heading.';
+  'You are a context-compaction assistant. The user message is a role-labelled transcript of the prefix of an ongoing conversation between a user and an AI coding agent (including tool calls and truncated tool outputs) that has grown too long to keep in full. Summarize this prefix into a concise narrative that preserves: (1) the user goals and constraints, (2) decisions made and their rationale, (3) files, paths, and identifiers referenced, (4) any unresolved tasks. Omit verbose tool outputs that no longer matter. Return only the summary text — do not preface it with commentary, do not wrap it in markdown, do not include a heading.';
 
 /**
  * Approximate average character → token ratio used by the v1 char-length
@@ -480,3 +480,196 @@ export function partitionMessages<T>(
  * default.
  */
 export const DEFAULT_KEEP_RECENT_TURNS = 5;
+
+// ——— Phase 7.3: summarizer resilience primitives ———
+
+/**
+ * Phase 7.3: per-item character cap applied to tool outputs (and other bulky
+ * payloads) when rendering the summarize prefix. Old tool output dominates
+ * agentic context but contributes little to a good summary — every surveyed
+ * harness truncates it before summarization.
+ */
+export const SUMMARY_TOOL_OUTPUT_MAX_CHARS = 2_000;
+
+/**
+ * Phase 7.3: tokens reserved out of the summarizer model's own context window
+ * when budgeting the summarize-call input — the summarizer needs room to
+ * *emit* its summary, plus prompt overhead. Mirrors the ~20k output reserve
+ * shape used by Claude Code / opencode.
+ */
+export const SUMMARIZER_INPUT_RESERVE_TOKENS = 20_000;
+
+/**
+ * Phase 7.3: maximum number of drop-oldest-and-retry attempts after the
+ * summarizer call fails with a context-overflow error (Codex
+ * `remove_first_item` loop; Claude Code retries ≤3 seeded from the reported
+ * token gap). Non-overflow errors are never retried.
+ */
+export const MAX_SUMMARIZER_TRIM_RETRIES = 3;
+
+/**
+ * Phase 7.3: post-compaction state must be at most this fraction of the
+ * pre-compaction char estimate, or the compaction is judged **inflated** —
+ * the original state is preserved and the attempt recorded as a failure
+ * (Gemini's re-count + restore-if-inflated check). A summary that does not
+ * meaningfully shrink the history is pure cache invalidation plus an extra
+ * model call.
+ */
+export const COMPACTION_MIN_SHRINK_RATIO = 0.9;
+
+/**
+ * Phase 7.3: number of consecutive AUTO-compaction failures on a session
+ * after which the auto-trigger stops firing (circuit breaker). Claude Code's
+ * "thrashing" breaker precedent: their telemetry found sessions with 50+
+ * consecutive auto-compact failures before the breaker existed. Manual
+ * {@link import('./agent.js').OpenRouterAgentRun.compact} calls are always
+ * allowed and reset the counter on success.
+ */
+export const COMPACTION_FAILURE_LIMIT = 3;
+
+/**
+ * Phase 7.3: classify an error as a context-window overflow (the only class
+ * of summarizer failure worth a drop-oldest retry). The API's error text is
+ * the oracle (Claude Code precedent) — matched loosely across providers.
+ */
+export function isContextOverflowError(err: unknown): boolean {
+  const message =
+    err instanceof Error
+      ? err.message
+      : typeof err === 'string'
+        ? err
+        : err !== null && typeof err === 'object' && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : '';
+  return /context[ _-]?(?:length|window)|too long|too many tokens|maximum (?:context|.{0,20}tokens)|exceeds? .{0,30}(?:context|token)|prompt is too (?:long|large)|input is too (?:long|large)|\b413\b/i.test(
+    message,
+  );
+}
+
+/**
+ * Phase 7.3: resolve the character budget for the summarize-call input:
+ * `max(floor(window × 0.25), window − SUMMARIZER_INPUT_RESERVE_TOKENS)`
+ * tokens, translated at {@link CHARS_PER_TOKEN}. The 25% floor keeps tiny /
+ * mis-resolved windows from producing a useless (or negative) budget.
+ */
+export function resolveSummarizerInputBudgetChars(
+  model: string,
+  overrides?: Readonly<Record<string, number>>,
+): number {
+  const window = getModelContextWindow(model, overrides);
+  const budgetTokens = Math.max(
+    Math.floor(window * 0.25),
+    window - SUMMARIZER_INPUT_RESERVE_TOKENS,
+  );
+  return budgetTokens * CHARS_PER_TOKEN;
+}
+
+function truncateForSummary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)}… [truncated ${text.length - maxChars} chars]`;
+}
+
+/** Render a message `content` field (string or content-block array) as text. */
+function renderContentForSummary(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) {
+    return content === null || content === undefined ? '' : safeStringify(content);
+  }
+  const parts: string[] = [];
+  for (const block of content) {
+    if (typeof block === 'string') {
+      parts.push(block);
+      continue;
+    }
+    if (block === null || typeof block !== 'object') continue;
+    const b = block as Record<string, unknown>;
+    const type = typeof b.type === 'string' ? b.type : '';
+    if (/image/.test(type)) {
+      // Image payloads (base64 or URL) are opaque to a text summarizer —
+      // pure token waste (Claude Code strips to '[image]').
+      parts.push('[image]');
+    } else if (/file|document/.test(type)) {
+      parts.push('[document]');
+    } else if (typeof b.text === 'string') {
+      parts.push(b.text);
+    } else {
+      parts.push(safeStringify(b));
+    }
+  }
+  return parts.join(' ');
+}
+
+function safeStringify(value: unknown): string {
+  try {
+    const piece = JSON.stringify(value);
+    return typeof piece === 'string' ? piece : '';
+  } catch {
+    return '[unserializable]';
+  }
+}
+
+/**
+ * Phase 7.3: render the summarize prefix as a **readable, role-labelled
+ * transcript** instead of `JSON.stringify` of raw SDK items. The summarizer
+ * reads prose better than wire JSON, and the rendering:
+ *
+ * - truncates each tool output to {@link SUMMARY_TOOL_OUTPUT_MAX_CHARS},
+ * - replaces image / document payloads with `[image]` / `[document]` markers,
+ * - **strips encrypted reasoning content** (`encrypted_content`) entirely —
+ *   the summarizer cannot read it and would pay tokens for it; readable
+ *   reasoning summaries are kept,
+ * - never throws on odd items (unknown shapes render as their JSON with any
+ *   `encrypted_content` field removed, truncated).
+ */
+export function renderMessagesForSummary(messages: unknown): string {
+  if (typeof messages === 'string') return messages;
+  if (!Array.isArray(messages)) return '';
+  const lines: string[] = [];
+  for (const item of messages) {
+    if (item === null || typeof item !== 'object') {
+      if (item !== undefined) lines.push(safeStringify(item));
+      continue;
+    }
+    const it = item as Record<string, unknown>;
+    const type = typeof it.type === 'string' ? it.type : undefined;
+    if ((type === undefined || type === 'message') && typeof it.role === 'string') {
+      lines.push(`${it.role}: ${renderContentForSummary(it.content)}`);
+    } else if (type === 'function_call') {
+      const name = typeof it.name === 'string' ? it.name : 'unknown_tool';
+      const args = typeof it.arguments === 'string' ? it.arguments : safeStringify(it.arguments);
+      lines.push(`[tool call] ${name}(${truncateForSummary(args, 500)})`);
+    } else if (type === 'function_call_output') {
+      const output = typeof it.output === 'string' ? it.output : safeStringify(it.output);
+      lines.push(`[tool result] ${truncateForSummary(output, SUMMARY_TOOL_OUTPUT_MAX_CHARS)}`);
+    } else if (type === 'reasoning') {
+      // Keep any READABLE reasoning summary; never the encrypted blob.
+      const summary = it.summary;
+      const readable = Array.isArray(summary)
+        ? summary
+            .map((s) =>
+              typeof s === 'string'
+                ? s
+                : s !== null &&
+                    typeof s === 'object' &&
+                    typeof (s as { text?: unknown }).text === 'string'
+                  ? (s as { text: string }).text
+                  : '',
+            )
+            .filter((s) => s.length > 0)
+            .join(' ')
+        : typeof summary === 'string'
+          ? summary
+          : '';
+      lines.push(
+        readable.length > 0 ? `[reasoning] ${truncateForSummary(readable, 500)}` : '[reasoning]',
+      );
+    } else {
+      // Unknown item shape — keep its JSON (sans encrypted payload) so the
+      // summarizer still sees it happened.
+      const rest = { ...it };
+      delete rest.encrypted_content;
+      lines.push(truncateForSummary(safeStringify(rest), SUMMARY_TOOL_OUTPUT_MAX_CHARS));
+    }
+  }
+  return lines.join('\n');
+}

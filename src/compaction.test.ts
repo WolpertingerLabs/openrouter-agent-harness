@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   CHARS_PER_TOKEN,
+  COMPACTION_FAILURE_LIMIT,
+  COMPACTION_MIN_SHRINK_RATIO,
   COMPACTION_PROMPT,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   DEFAULT_KEEP_BUDGET_MAX_TOKENS,
@@ -10,14 +12,20 @@ import {
   DEFAULT_SAFETY_BUFFER_TOKENS,
   DEFAULT_THRESHOLD_RATIO,
   KEEP_BUDGET_WINDOW_FRACTION,
+  MAX_SUMMARIZER_TRIM_RETRIES,
   MODEL_CONTEXT_WINDOWS,
+  SUMMARIZER_INPUT_RESERVE_TOKENS,
+  SUMMARY_TOOL_OUTPUT_MAX_CHARS,
   estimateInstructionsAndToolsTokens,
   estimateMessagesCharLength,
   getModelContextWindow,
+  isContextOverflowError,
   partitionMessages,
+  renderMessagesForSummary,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
   resolveKeepBudgetTokens,
+  resolveSummarizerInputBudgetChars,
   serializeMessagesForEstimate,
 } from './compaction.js';
 
@@ -585,5 +593,175 @@ describe('partitionMessages — tail-validity property (7.2)', () => {
         }
       }
     }
+  });
+});
+
+// ——— Phase 7.3: summarizer resilience primitives ———
+
+describe('isContextOverflowError', () => {
+  it.each([
+    'This input exceeds the maximum context length',
+    'prompt is too long: 250000 tokens > 200000 maximum',
+    'Request too large: too many tokens',
+    'maximum context window exceeded',
+    'context_length_exceeded',
+    'Input is too large for this model',
+    'HTTP 413 Payload Too Large',
+  ])('classifies %j as overflow', (message) => {
+    expect(isContextOverflowError(new Error(message))).toBe(true);
+  });
+
+  it.each([
+    'rate limit exceeded',
+    'invalid api key',
+    'Internal server error',
+    'network timeout',
+    '',
+  ])('does NOT classify %j as overflow', (message) => {
+    expect(isContextOverflowError(new Error(message))).toBe(false);
+  });
+
+  it('accepts plain strings and message-carrying objects', () => {
+    expect(isContextOverflowError('context length exceeded')).toBe(true);
+    expect(isContextOverflowError({ message: 'prompt is too long' })).toBe(true);
+  });
+
+  it('returns false for shapeless values', () => {
+    expect(isContextOverflowError(null)).toBe(false);
+    expect(isContextOverflowError(undefined)).toBe(false);
+    expect(isContextOverflowError(42)).toBe(false);
+    expect(isContextOverflowError({})).toBe(false);
+  });
+});
+
+describe('resolveSummarizerInputBudgetChars', () => {
+  it('reserves SUMMARIZER_INPUT_RESERVE_TOKENS out of large windows', () => {
+    // claude-sonnet-4.6 = 200k → (200k − 20k) tokens × 4 chars.
+    expect(resolveSummarizerInputBudgetChars('anthropic/claude-sonnet-4.6')).toBe(
+      (200_000 - SUMMARIZER_INPUT_RESERVE_TOKENS) * CHARS_PER_TOKEN,
+    );
+  });
+
+  it('floors tiny windows at 25% rather than going non-positive', () => {
+    expect(resolveSummarizerInputBudgetChars('tiny/model', { 'tiny/model': 1_000 })).toBe(
+      Math.floor(1_000 * 0.25) * CHARS_PER_TOKEN,
+    );
+  });
+
+  it('exposes sane retry/breaker/shrink constants', () => {
+    expect(MAX_SUMMARIZER_TRIM_RETRIES).toBe(3);
+    expect(COMPACTION_FAILURE_LIMIT).toBe(3);
+    expect(COMPACTION_MIN_SHRINK_RATIO).toBeLessThan(1);
+    expect(COMPACTION_MIN_SHRINK_RATIO).toBeGreaterThan(0);
+  });
+});
+
+describe('renderMessagesForSummary', () => {
+  it('passes a string messages field through verbatim and returns "" for non-arrays', () => {
+    expect(renderMessagesForSummary('raw')).toBe('raw');
+    expect(renderMessagesForSummary(null)).toBe('');
+    expect(renderMessagesForSummary(42)).toBe('');
+  });
+
+  it('renders role-labelled message lines', () => {
+    const out = renderMessagesForSummary([
+      { role: 'user', content: 'hello' },
+      { type: 'message', role: 'assistant', content: 'world' },
+    ]);
+    expect(out).toBe('user: hello\nassistant: world');
+  });
+
+  it('renders content-block arrays, replacing images/documents with markers', () => {
+    const out = renderMessagesForSummary([
+      {
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'look at this' },
+          { type: 'input_image', image_url: 'data:image/png;base64,AAAA' },
+          { type: 'input_file', file_data: 'QkJC' },
+        ],
+      },
+    ]);
+    expect(out).toBe('user: look at this [image] [document]');
+    expect(out).not.toContain('AAAA');
+  });
+
+  it('renders tool calls with truncated arguments and tool results truncated to the cap', () => {
+    const bigOutput = 'y'.repeat(SUMMARY_TOOL_OUTPUT_MAX_CHARS + 500);
+    const out = renderMessagesForSummary([
+      { type: 'function_call', call_id: 'c1', name: 'read_file', arguments: '{"path":"a.txt"}' },
+      { type: 'function_call_output', call_id: 'c1', output: bigOutput },
+    ]);
+    expect(out).toContain('[tool call] read_file({"path":"a.txt"})');
+    expect(out).toContain('[tool result] ');
+    expect(out).toContain('… [truncated 500 chars]');
+    expect(out.length).toBeLessThan(bigOutput.length);
+  });
+
+  it('strips encrypted reasoning content entirely, keeping the readable summary', () => {
+    const out = renderMessagesForSummary([
+      {
+        type: 'reasoning',
+        encrypted_content: 'SECRET_BLOB_' + 'Z'.repeat(200),
+        summary: [{ type: 'summary_text', text: 'thinking about the bug' }],
+      },
+    ]);
+    expect(out).toBe('[reasoning] thinking about the bug');
+    expect(out).not.toContain('SECRET_BLOB_');
+    expect(out).not.toContain('encrypted_content');
+  });
+
+  it('renders a bare [reasoning] marker when no readable summary exists', () => {
+    expect(renderMessagesForSummary([{ type: 'reasoning', encrypted_content: 'SECRET' }])).toBe(
+      '[reasoning]',
+    );
+    expect(renderMessagesForSummary([{ type: 'reasoning', summary: 'short note' }])).toBe(
+      '[reasoning] short note',
+    );
+  });
+
+  it('renders unknown item shapes as JSON with encrypted_content removed', () => {
+    const out = renderMessagesForSummary([
+      { type: 'mystery_item', payload: 'visible', encrypted_content: 'SECRET' },
+    ]);
+    expect(out).toContain('mystery_item');
+    expect(out).toContain('visible');
+    expect(out).not.toContain('SECRET');
+    expect(out).not.toContain('encrypted_content');
+  });
+
+  it('tolerates primitives, null items, and unserializable members', () => {
+    const cyclic: Record<string, unknown> = { type: 'mystery' };
+    cyclic.self = cyclic;
+    const out = renderMessagesForSummary(['loose string', null, 7, cyclic]);
+    expect(out).toContain('loose string');
+    expect(out).toContain('7');
+    expect(out).toContain('[unserializable]');
+  });
+
+  it('renders non-string function_call arguments and non-string outputs via JSON', () => {
+    const out = renderMessagesForSummary([
+      { type: 'function_call', call_id: 'c1', name: 'edit_file', arguments: { a: 1 } },
+      { type: 'function_call_output', call_id: 'c1', output: { ok: true } },
+    ]);
+    expect(out).toContain('edit_file({"a":1})');
+    expect(out).toContain('[tool result] {"ok":true}');
+  });
+});
+
+describe('renderMessagesForSummary — content edge shapes', () => {
+  it('renders string blocks and typeless object blocks inside content arrays', () => {
+    const out = renderMessagesForSummary([
+      { role: 'user', content: ['loose block', { weird: 'shape' }, null, 5] },
+    ]);
+    expect(out).toBe('user: loose block {"weird":"shape"}');
+  });
+
+  it('renders non-array object content via JSON and null content as empty', () => {
+    expect(renderMessagesForSummary([{ role: 'user', content: { nested: true } }])).toBe(
+      'user: {"nested":true}',
+    );
+    expect(renderMessagesForSummary([{ role: 'user', content: null }])).toBe('user: ');
+    expect(renderMessagesForSummary([{ role: 'user' }])).toBe('user: ');
   });
 });

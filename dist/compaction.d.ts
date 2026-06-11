@@ -11,7 +11,7 @@
  * partition prefix is sent verbatim as the model's `input`; this prompt is
  * passed via the `instructions` field.
  */
-export declare const COMPACTION_PROMPT = "You are a context-compaction assistant. The user message is the JSON-encoded prefix of an ongoing conversation between a user and an AI coding agent (including tool calls and tool outputs) that has grown too long to keep in full. Summarize this prefix into a concise narrative that preserves: (1) the user goals and constraints, (2) decisions made and their rationale, (3) files, paths, and identifiers referenced, (4) any unresolved tasks. Omit verbose tool outputs that no longer matter. Return only the summary text \u2014 do not preface it with commentary, do not wrap it in markdown, do not include a heading.";
+export declare const COMPACTION_PROMPT = "You are a context-compaction assistant. The user message is a role-labelled transcript of the prefix of an ongoing conversation between a user and an AI coding agent (including tool calls and truncated tool outputs) that has grown too long to keep in full. Summarize this prefix into a concise narrative that preserves: (1) the user goals and constraints, (2) decisions made and their rationale, (3) files, paths, and identifiers referenced, (4) any unresolved tasks. Omit verbose tool outputs that no longer matter. Return only the summary text \u2014 do not preface it with commentary, do not wrap it in markdown, do not include a heading.";
 /**
  * Approximate average character → token ratio used by the v1 char-length
  * heuristic. The ~4-chars-per-token figure is the conservative end of the
@@ -233,4 +233,70 @@ export declare function partitionMessages<T>(messages: readonly T[], opts: numbe
  * default.
  */
 export declare const DEFAULT_KEEP_RECENT_TURNS = 5;
+/**
+ * Phase 7.3: per-item character cap applied to tool outputs (and other bulky
+ * payloads) when rendering the summarize prefix. Old tool output dominates
+ * agentic context but contributes little to a good summary — every surveyed
+ * harness truncates it before summarization.
+ */
+export declare const SUMMARY_TOOL_OUTPUT_MAX_CHARS = 2000;
+/**
+ * Phase 7.3: tokens reserved out of the summarizer model's own context window
+ * when budgeting the summarize-call input — the summarizer needs room to
+ * *emit* its summary, plus prompt overhead. Mirrors the ~20k output reserve
+ * shape used by Claude Code / opencode.
+ */
+export declare const SUMMARIZER_INPUT_RESERVE_TOKENS = 20000;
+/**
+ * Phase 7.3: maximum number of drop-oldest-and-retry attempts after the
+ * summarizer call fails with a context-overflow error (Codex
+ * `remove_first_item` loop; Claude Code retries ≤3 seeded from the reported
+ * token gap). Non-overflow errors are never retried.
+ */
+export declare const MAX_SUMMARIZER_TRIM_RETRIES = 3;
+/**
+ * Phase 7.3: post-compaction state must be at most this fraction of the
+ * pre-compaction char estimate, or the compaction is judged **inflated** —
+ * the original state is preserved and the attempt recorded as a failure
+ * (Gemini's re-count + restore-if-inflated check). A summary that does not
+ * meaningfully shrink the history is pure cache invalidation plus an extra
+ * model call.
+ */
+export declare const COMPACTION_MIN_SHRINK_RATIO = 0.9;
+/**
+ * Phase 7.3: number of consecutive AUTO-compaction failures on a session
+ * after which the auto-trigger stops firing (circuit breaker). Claude Code's
+ * "thrashing" breaker precedent: their telemetry found sessions with 50+
+ * consecutive auto-compact failures before the breaker existed. Manual
+ * {@link import('./agent.js').OpenRouterAgentRun.compact} calls are always
+ * allowed and reset the counter on success.
+ */
+export declare const COMPACTION_FAILURE_LIMIT = 3;
+/**
+ * Phase 7.3: classify an error as a context-window overflow (the only class
+ * of summarizer failure worth a drop-oldest retry). The API's error text is
+ * the oracle (Claude Code precedent) — matched loosely across providers.
+ */
+export declare function isContextOverflowError(err: unknown): boolean;
+/**
+ * Phase 7.3: resolve the character budget for the summarize-call input:
+ * `max(floor(window × 0.25), window − SUMMARIZER_INPUT_RESERVE_TOKENS)`
+ * tokens, translated at {@link CHARS_PER_TOKEN}. The 25% floor keeps tiny /
+ * mis-resolved windows from producing a useless (or negative) budget.
+ */
+export declare function resolveSummarizerInputBudgetChars(model: string, overrides?: Readonly<Record<string, number>>): number;
+/**
+ * Phase 7.3: render the summarize prefix as a **readable, role-labelled
+ * transcript** instead of `JSON.stringify` of raw SDK items. The summarizer
+ * reads prose better than wire JSON, and the rendering:
+ *
+ * - truncates each tool output to {@link SUMMARY_TOOL_OUTPUT_MAX_CHARS},
+ * - replaces image / document payloads with `[image]` / `[document]` markers,
+ * - **strips encrypted reasoning content** (`encrypted_content`) entirely —
+ *   the summarizer cannot read it and would pay tokens for it; readable
+ *   reasoning summaries are kept,
+ * - never throws on odd items (unknown shapes render as their JSON with any
+ *   `encrypted_content` field removed, truncated).
+ */
+export declare function renderMessagesForSummary(messages: unknown): string;
 //# sourceMappingURL=compaction.d.ts.map

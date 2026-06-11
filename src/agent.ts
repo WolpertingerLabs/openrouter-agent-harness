@@ -14,14 +14,20 @@ import type { AnthropicCacheControlDirective, ResponsesRequest } from '@openrout
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
+  COMPACTION_FAILURE_LIMIT,
+  COMPACTION_MIN_SHRINK_RATIO,
   COMPACTION_PROMPT,
   CHARS_PER_TOKEN,
+  MAX_SUMMARIZER_TRIM_RETRIES,
   estimateInstructionsAndToolsTokens,
   getModelContextWindow,
+  isContextOverflowError,
   partitionMessages,
+  renderMessagesForSummary,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
   resolveKeepBudgetTokens,
+  resolveSummarizerInputBudgetChars,
   serializeMessagesForEstimate,
 } from './compaction.js';
 import { ModelContextLengthCache } from './openrouter-api.js';
@@ -1437,6 +1443,27 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     if (!state) return;
     const rawMessages = (state as { messages?: unknown }).messages;
     if (!Array.isArray(rawMessages) || rawMessages.length === 0) return;
+    // Phase 7.3: circuit breaker. After COMPACTION_FAILURE_LIMIT consecutive
+    // AUTO-compaction failures on this session, stop auto-firing — a wedged
+    // summarizer must not burn a model call on every run end (Claude Code's
+    // "thrashing" breaker). Manual compact() is always allowed (and resets
+    // the counter on success).
+    const failureCount = readCompactionFailureCount(state);
+    if (reason === 'auto' && failureCount >= COMPACTION_FAILURE_LIMIT) {
+      this.opts.logger?.(
+        'error',
+        'Auto-compaction circuit breaker open — skipping (manual compact() resets it)',
+        { consecutiveFailures: failureCount },
+      );
+      await this.safeFireHook('Notification', {
+        event: 'Notification',
+        level: 'error',
+        message: 'auto_compaction_breaker_open',
+        context: { sessionId: this.opts.sessionId, consecutiveFailures: failureCount },
+      });
+      return;
+    }
+
     // Phase 7.2: explicit keepRecentTurns keeps the last N TURNS verbatim;
     // when omitted, the keep tail is token-budgeted against the model's
     // context window (25% clamped 2k–8k). Both modes snap the cut to a turn
@@ -1467,6 +1494,108 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       reason,
     });
 
+    // Phase 7.3: render the prefix as a readable role-labelled transcript
+    // (truncated tool outputs, encrypted reasoning stripped) and cap it to
+    // the summarizer's own input budget — the summarize call must not itself
+    // overflow the window it is trying to relieve. Items dropped here are
+    // still removed from the history (they are part of `summarize`); they
+    // just don't inform the summary (Codex drop-oldest precedent).
+    const budgetChars = resolveSummarizerInputBudgetChars(
+      this.opts.model,
+      this.opts.modelContextWindows,
+    );
+    let toSummarize: readonly unknown[] = summarize;
+    let rendered = renderMessagesForSummary(toSummarize);
+    while (rendered.length > budgetChars && toSummarize.length > 1) {
+      toSummarize = toSummarize.slice(Math.max(1, Math.floor(toSummarize.length / 4)));
+      rendered = renderMessagesForSummary(toSummarize);
+    }
+
+    // Phase 7.3: drop-oldest retry loop. Only context-overflow errors are
+    // retried (the API error text is the oracle); anything else propagates
+    // immediately. Each retry drops the oldest quarter of the remaining
+    // items and re-renders.
+    let summaryText: string;
+    let attempt = 0;
+    for (;;) {
+      try {
+        summaryText = await this.#summarizeOnce(rendered);
+        break;
+      } catch (err) {
+        const retryable =
+          isContextOverflowError(err) &&
+          toSummarize.length > 1 &&
+          attempt < MAX_SUMMARIZER_TRIM_RETRIES;
+        if (!retryable) {
+          await this.#recordCompactionFailure(reason, failureCount);
+          throw err;
+        }
+        attempt += 1;
+        this.opts.logger?.(
+          'warn',
+          'Compaction summarizer overflowed — dropping oldest items and retrying',
+          { attempt, remainingItems: toSummarize.length },
+        );
+        toSummarize = toSummarize.slice(Math.max(1, Math.floor(toSummarize.length / 4)));
+        rendered = renderMessagesForSummary(toSummarize);
+      }
+    }
+
+    const summaryMessage = {
+      type: 'message' as const,
+      role: 'developer' as const,
+      content: `[Compacted prior context]\n${summaryText}`,
+    };
+    const nextMessages = [summaryMessage, ...keep];
+
+    // Phase 7.3: inflation check (Gemini). If the rewritten state is not
+    // meaningfully smaller than the original, restore nothing (we have not
+    // saved yet), record a failed attempt, and surface the failure — a
+    // summary that grows the history is pure cache invalidation.
+    const prevChars = serializeMessagesForEstimate(rawMessages).length;
+    const nextChars = serializeMessagesForEstimate(nextMessages).length;
+    if (nextChars > prevChars * COMPACTION_MIN_SHRINK_RATIO) {
+      await this.#recordCompactionFailure(reason, failureCount);
+      throw new Error(
+        `Compaction did not shrink the history (${prevChars} → ${nextChars} chars) — original state preserved`,
+      );
+    }
+
+    const nextState: ConversationState = {
+      ...state,
+      messages: nextMessages as ConversationState['messages'],
+      updatedAt: Date.now(),
+    };
+    // The SDK uses `undefined` to mean "absent" for these optional fields;
+    // deleting them keeps the on-disk JSON tidy and lets a re-load via the
+    // accessor yield the same shape the SDK would build from scratch.
+    delete (nextState as { previousResponseId?: unknown }).previousResponseId;
+    delete (nextState as { pendingToolCalls?: unknown }).pendingToolCalls;
+    delete (nextState as { unsentToolResults?: unknown }).unsentToolResults;
+    delete (nextState as { partialResponse?: unknown }).partialResponse;
+    // Phase 7.3: any successful compaction (auto or manual) closes the
+    // breaker.
+    delete (nextState as { compactionFailureCount?: unknown }).compactionFailureCount;
+
+    await this.stateAccessor.save(nextState);
+
+    if (this.persistSession) {
+      await logTranscriptCompact({
+        logsRoot: this.opts.logsRoot,
+        sessionId: this.opts.sessionId,
+        reason,
+        droppedMessages: summarize.length,
+        summaryText,
+      });
+    }
+  }
+
+  /**
+   * Phase 7.3: one summarizer attempt — an isolated single-shot `callModel`
+   * over the rendered transcript. Extracted from {@link compact} so the
+   * drop-oldest retry loop can re-issue the call with a shorter input.
+   */
+  async #summarizeOnce(rendered: string): Promise<string> {
     const client = this.createOpenRouterClient();
     const compactSessionId = `${this.opts.sessionId}:compact:${randomUUID()}`;
     const result = client.callModel({
@@ -1475,7 +1604,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       ...this.opts.modelParams,
       model: this.opts.model,
       sessionId: compactSessionId,
-      input: JSON.stringify(summarize),
+      input: rendered,
       instructions: COMPACTION_PROMPT,
       // Compaction prompts are exactly the kind of large reusable prefix that
       // benefits from auto prompt caching. Inherit the run's `cacheControl`
@@ -1497,36 +1626,26 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         if (typeof delta === 'string') summaryText += delta;
       }
     }
+    return summaryText;
+  }
 
-    const summaryMessage = {
-      type: 'message' as const,
-      role: 'developer' as const,
-      content: `[Compacted prior context]\n${summaryText}`,
-    };
-
-    const nextState: ConversationState = {
-      ...state,
-      messages: [summaryMessage, ...keep] as ConversationState['messages'],
-      updatedAt: Date.now(),
-    };
-    // The SDK uses `undefined` to mean "absent" for these optional fields;
-    // deleting them keeps the on-disk JSON tidy and lets a re-load via the
-    // accessor yield the same shape the SDK would build from scratch.
-    delete (nextState as { previousResponseId?: unknown }).previousResponseId;
-    delete (nextState as { pendingToolCalls?: unknown }).pendingToolCalls;
-    delete (nextState as { unsentToolResults?: unknown }).unsentToolResults;
-    delete (nextState as { partialResponse?: unknown }).partialResponse;
-
-    await this.stateAccessor.save(nextState);
-
-    if (this.persistSession) {
-      await logTranscriptCompact({
-        logsRoot: this.opts.logsRoot,
-        sessionId: this.opts.sessionId,
-        reason,
-        droppedMessages: summarize.length,
-        summaryText,
-      });
+  /**
+   * Phase 7.3: persist a consecutive-AUTO-failure increment into the session
+   * state so cron re-invocations honor the circuit breaker. Manual failures
+   * do not count (the breaker gates only the implicit trigger). Best-effort:
+   * a failing save must not mask the original compaction error.
+   */
+  async #recordCompactionFailure(reason: 'auto' | 'manual', current: number): Promise<void> {
+    if (reason !== 'auto') return;
+    try {
+      const state = await this.stateAccessor.load();
+      if (!state) return;
+      await this.stateAccessor.save({
+        ...state,
+        compactionFailureCount: current + 1,
+      } as ConversationState);
+    } catch (err) {
+      this.opts.logger?.('warn', 'Failed to persist compaction failure count', { error: err });
     }
   }
 
@@ -3290,6 +3409,17 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       await safeFireHook('Stop', stopPayload);
     }
   }
+}
+
+/**
+ * Phase 7.3: read the consecutive-AUTO-compaction-failure counter persisted
+ * alongside the SDK's `ConversationState` (an extra harness-owned field —
+ * `compactionFailureCount` — that round-trips through the JSON state file).
+ * Missing / non-numeric / negative values read as 0.
+ */
+function readCompactionFailureCount(state: unknown): number {
+  const raw = (state as { compactionFailureCount?: unknown } | null)?.compactionFailureCount;
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
 
 interface DeriveCompletionInput {

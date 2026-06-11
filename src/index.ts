@@ -104,6 +104,8 @@ export type {
   CheckpointLogger,
 } from './checkpoints.js';
 export {
+  COMPACTION_FAILURE_LIMIT,
+  COMPACTION_MIN_SHRINK_RATIO,
   COMPACTION_PROMPT,
   CHARS_PER_TOKEN,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -114,14 +116,20 @@ export {
   DEFAULT_SAFETY_BUFFER_TOKENS,
   DEFAULT_THRESHOLD_RATIO,
   KEEP_BUDGET_WINDOW_FRACTION,
+  MAX_SUMMARIZER_TRIM_RETRIES,
   MODEL_CONTEXT_WINDOWS,
+  SUMMARIZER_INPUT_RESERVE_TOKENS,
+  SUMMARY_TOOL_OUTPUT_MAX_CHARS,
   estimateInstructionsAndToolsTokens,
   estimateMessagesCharLength,
   getModelContextWindow,
+  isContextOverflowError,
   partitionMessages,
+  renderMessagesForSummary,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
   resolveKeepBudgetTokens,
+  resolveSummarizerInputBudgetChars,
   serializeMessagesForEstimate,
 } from './compaction.js';
 export type { PartitionMessagesOptions } from './compaction.js';
