@@ -52,7 +52,10 @@ const DEFAULT_STREAM_STALL_TIMEOUT_MS = 120_000;
  * {@link OpenRouterAgentRunOptions.toolTimeoutMs}). One minute covers every
  * non-exempt built-in (file I/O, grep/glob, notebook edits) with a wide
  * margin; the long-running tools — `bash` (own `timeout_ms`),
- * `spawn_subagent`/`spawn_subagents`, MCP-bridged tools — are exempt.
+ * `spawn_subagent`/`spawn_subagents`, `ask_user_question` (blocks on a
+ * human), `monitor` (waits on a condition by design), `skill` (fork-context
+ * skills run a whole subagent inside execute), MCP-bridged tools — are
+ * exempt.
  */
 const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
 /**
@@ -1969,17 +1972,24 @@ function wrapToolWithPermission(t, canUseTool) {
 }
 /**
  * Built-in tools exempt from the {@link OpenRouterAgentRunOptions.toolTimeoutMs}
- * deadline: `bash` carries its own timeout with a model-controllable
- * `timeout_ms` input (default 30s, clamped to 10 min), and the subagent
+ * deadline: `bash` and `monitor` carry their own model-controllable timeouts
+ * (`timeout_ms` / `max_duration_ms`, each clamped to 10 min); the subagent
  * spawners are long-running by design (bounded by each child's own
- * `maxTurns` / `maxBudgetUsd` instead). MCP-bridged tools are exempted
- * separately by their `<serverName>__<toolName>` name marker — see
- * {@link isToolTimeoutExempt}.
+ * `maxTurns` / `maxBudgetUsd` instead); `ask_user_question` blocks on a
+ * human answering via the host's `onAskUserQuestion` handler (user thinking
+ * time is not a tool failure — the permission-prompt wait is likewise
+ * outside the deadline, by wrapper ordering); `skill` drives an entire
+ * subagent run inside execute for `context: fork` skills. MCP-bridged tools
+ * are exempted separately by their `<serverName>__<toolName>` name marker —
+ * see {@link isToolTimeoutExempt}.
  */
 const TOOL_TIMEOUT_EXEMPT_NAMES = new Set([
     'bash',
     'spawn_subagent',
     'spawn_subagents',
+    'ask_user_question',
+    'monitor',
+    'skill',
 ]);
 /**
  * Whether a client tool name is exempt from the per-tool execute deadline.

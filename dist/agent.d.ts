@@ -188,6 +188,13 @@ export interface OpenRouterAgentRunOptions {
      *   input field (default 30s, clamped to 10 min).
      * - `spawn_subagent` / `spawn_subagents` — long-running by design;
      *   subagents are bounded by their own `maxTurns` / `maxBudgetUsd`.
+     * - `ask_user_question` — blocks on a HUMAN answering via the host's
+     *   `onAskUserQuestion` handler; a person stepping away for lunch is not
+     *   a tool failure.
+     * - `monitor` — waits on external output by design and carries its own
+     *   `max_duration_ms` input (default 60s, clamped to 10 min).
+     * - `skill` — `context: fork` skills drive an entire subagent run inside
+     *   their execute (bounded like spawned subagents).
      * - MCP-bridged tools (names containing the `__` separator, i.e.
      *   `<serverName>__<toolName>`) — external servers own their timeout
      *   semantics.

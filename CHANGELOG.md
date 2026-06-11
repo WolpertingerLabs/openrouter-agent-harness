@@ -57,9 +57,12 @@ after <N>ms', timedOut: true })` — mirroring the `canUseTool` deny
   `function_call_output`, `detectToolResultIsError` flags it, and the
   run continues with the model seeing the failure. The wrapper composes
   INNERMOST (inside permission/hook wrappers) so `PostToolUse` and the
-  `tool_result` both reflect the timeout. Exempt: `bash` (own
-  model-controllable `timeout_ms`), `spawn_subagent`/`spawn_subagents`
-  (long-running by design), and MCP-bridged tools (`<server>__<tool>`
+  `tool_result` both reflect the timeout. Exempt: `bash` and `monitor`
+  (own model-controllable `timeout_ms` / `max_duration_ms`),
+  `spawn_subagent`/`spawn_subagents` (long-running by design),
+  `ask_user_question` (blocks on a human answering),
+  `skill` (fork-context skills run a subagent inside execute), and
+  MCP-bridged tools (`<server>__<tool>`
   names — external servers own their semantics). The losing execute's
   underlying I/O is NOT cancelled in v1 (no signal plumbing) — the loop
   just stops waiting, and the orphaned promise's settlement is

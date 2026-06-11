@@ -208,6 +208,10 @@ describe('toolTimeoutMs — per-tool execute deadline', () => {
   it.each([
     ['bash (own timeout_ms)', 'bash'],
     ['spawn_subagent (long-running by design)', 'spawn_subagent'],
+    ['spawn_subagents (long-running by design)', 'spawn_subagents'],
+    ['ask_user_question (blocks on a human answering)', 'ask_user_question'],
+    ['monitor (own max_duration_ms)', 'monitor'],
+    ['skill (fork-context skills run a subagent inside execute)', 'skill'],
     ['MCP-bridged names with the __ separator', 'srv__remote_thing'],
   ])('exempts %s from the deadline', async (_label, name) => {
     callModelMock.mockImplementationOnce(toolCyclingAttempt(name));
