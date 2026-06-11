@@ -400,6 +400,66 @@ describe('OpenRouterAgentRun transcript log', () => {
     expect(toolResult.output).toBe('file body');
   });
 
+  it('writes a server_tool record for an openrouter:* output item', async () => {
+    callModelMock.mockImplementation(
+      fakeCallModel({
+        events: [
+          { type: 'turn.start', turnNumber: 0, timestamp: 1 },
+          {
+            type: 'response.output_item.done',
+            outputIndex: 0,
+            sequenceNumber: 1,
+            item: {
+              type: 'openrouter:web_search',
+              id: 'st_ws',
+              status: 'completed',
+              action: { type: 'search', query: 'latest harness release' },
+            },
+          },
+          {
+            type: 'response.output_item.done',
+            outputIndex: 1,
+            sequenceNumber: 2,
+            item: {
+              type: 'openrouter:web_fetch',
+              id: 'st_wf',
+              status: 'completed',
+              url: 'https://example.com',
+              error: 'fetch timed out',
+            },
+          },
+          { type: 'turn.end', turnNumber: 0, timestamp: 2 },
+        ],
+      }),
+    );
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'search the web',
+      logsRoot,
+    });
+    await drain(run);
+
+    const records = await collectTranscript(logsRoot, SESSION);
+    const serverTools = records.filter((r) => r.kind === 'server_tool') as Array<
+      Extract<TranscriptRecord, { kind: 'server_tool' }>
+    >;
+    expect(serverTools).toHaveLength(2);
+
+    const search = serverTools.find((r) => r.toolType === 'openrouter:web_search')!;
+    expect(search.callId).toBe('st_ws');
+    expect(search.status).toBe('completed');
+    expect(search.input).toEqual({ query: 'latest harness release' });
+    expect(search.isError).toBe(false);
+    expect(search.output).toHaveProperty('action');
+
+    const fetch = serverTools.find((r) => r.toolType === 'openrouter:web_fetch')!;
+    expect(fetch.callId).toBe('st_wf');
+    expect(fetch.isError).toBe(true);
+    expect(fetch.output).toMatchObject({ url: 'https://example.com', error: 'fetch timed out' });
+  });
+
   it('tolerates null / unknown items and non-text content in response.output', async () => {
     callModelMock.mockImplementation(
       fakeCallModel({

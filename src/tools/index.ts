@@ -108,6 +108,11 @@ export type {
   TaskUpdateToolResult,
 } from './tasks.js';
 export { SERVER_TOOLS, createServerToolsHooks } from './server-tools.js';
+export {
+  isServerToolOutputItem,
+  normalizeServerToolItem,
+  type NormalizedServerTool,
+} from './server-tool-items.js';
 export { DEFAULT_TOOL_CONTEXT } from './context.js';
 export type { ToolContext } from './context.js';
 

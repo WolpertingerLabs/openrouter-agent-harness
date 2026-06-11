@@ -38,6 +38,28 @@ export type AgentCoreEvent = {
     output: unknown;
     isError: boolean;
 } | {
+    /**
+     * An OpenRouter server-executed tool invocation+result (e.g.
+     * `openrouter:datetime`, `openrouter:web_search`, `openrouter:web_fetch`).
+     * Unlike client `tool_call`/`tool_result`, these run on OpenRouter's
+     * servers and arrive as a single response output item carrying both the
+     * invocation and its result — there is no client call/result round-trip
+     * and no `canUseTool` gate. Emitted once per server-tool output item.
+     */
+    type: 'server_tool';
+    /** Full output-item discriminator, e.g. `"openrouter:web_search"`. */
+    toolType: string;
+    /** The item's `id` when the provider supplied one. */
+    callId?: string;
+    /** SDK `ToolCallStatus`: `"completed"` / `"in_progress"` / `"incomplete"`. */
+    status: string;
+    /** Best-effort model input (e.g. web_search `{ query }`); often absent. */
+    input?: unknown;
+    /** Result payload with the envelope keys (`type`/`id`/`status`) stripped. */
+    output: unknown;
+    /** Derived failure flag (web_fetch `error`, or non-`completed` status). */
+    isError: boolean;
+} | {
     type: 'turn_end';
     turnNumber: number;
     usage: TokenUsage | null;

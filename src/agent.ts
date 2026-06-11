@@ -35,6 +35,7 @@ import {
   type ActiveSkillContext,
 } from './tools/skill.js';
 import { createServerToolsHooks } from './tools/server-tools.js';
+import { isServerToolOutputItem, normalizeServerToolItem } from './tools/server-tool-items.js';
 import { type ToolContext } from './tools/context.js';
 import type { OnAskUserQuestion } from './tools/ask-user-question.js';
 import type { OnTasksChanged, TaskListRef } from './tools/tasks.js';
@@ -52,6 +53,7 @@ import {
   logTranscriptUser,
   logTranscriptAssistant,
   logTranscriptToolResult,
+  logTranscriptServerTool,
   logTranscriptCompact,
   logTranscriptSessionEnd,
   type TranscriptToolCall,
@@ -2484,6 +2486,36 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
                   name: fnItem.name,
                   input,
                 };
+              } else if (isServerToolOutputItem(item)) {
+                // OpenRouter server-executed tools (datetime / web_search /
+                // web_fetch). These bypass the client tool path entirely:
+                // OpenRouter runs them and returns a single output item that
+                // carries BOTH the invocation and its result. Emit a
+                // `server_tool` event (and persist a matching transcript
+                // record) so consumers can render them alongside client tools
+                // without inventing a synthetic call/result pair.
+                const normalized = normalizeServerToolItem(item);
+                yield {
+                  type: 'server_tool',
+                  toolType: normalized.toolType,
+                  ...(normalized.callId !== undefined && { callId: normalized.callId }),
+                  status: normalized.status,
+                  ...(normalized.input !== undefined && { input: normalized.input }),
+                  output: normalized.output,
+                  isError: normalized.isError,
+                };
+                if (persistSession) {
+                  await logTranscriptServerTool({
+                    logsRoot,
+                    sessionId,
+                    toolType: normalized.toolType,
+                    callId: normalized.callId,
+                    status: normalized.status,
+                    input: normalized.input,
+                    output: normalized.output,
+                    isError: normalized.isError,
+                  });
+                }
               }
               continue;
             }

@@ -789,3 +789,63 @@ describe('OpenRouterAgentRun — back-compat with string prompt', () => {
     expect(complete.status).toBe('success');
   });
 });
+
+describe('OpenRouterAgentRun — server tools', () => {
+  it('emits a server_tool event for openrouter:* output items, alongside client tool_call', async () => {
+    scriptCallModel([
+      {
+        events: [
+          { type: 'turn.start', turnNumber: 0 },
+          // A client function_call still maps to tool_call (unchanged).
+          {
+            type: 'response.output_item.done',
+            outputIndex: 0,
+            sequenceNumber: 1,
+            item: {
+              type: 'function_call',
+              callId: 'c1',
+              name: 'read_file',
+              arguments: '{"path":"x"}',
+            },
+          },
+          // An OpenRouter server tool maps to server_tool.
+          {
+            type: 'response.output_item.done',
+            outputIndex: 1,
+            sequenceNumber: 2,
+            item: {
+              type: 'openrouter:datetime',
+              id: 'st_dt',
+              status: 'completed',
+              datetime: '2026-06-11T12:00:00Z',
+              timezone: 'UTC',
+            },
+          },
+          { type: 'turn.end', turnNumber: 0 },
+        ],
+      },
+    ]);
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: TEST_SESSION,
+      prompt: 'what time is it',
+    });
+    const events = await collect(run);
+
+    const toolCall = events.find(
+      (e): e is Extract<AgentCoreEvent, { type: 'tool_call' }> => e.type === 'tool_call',
+    );
+    expect(toolCall).toMatchObject({ callId: 'c1', name: 'read_file', input: { path: 'x' } });
+
+    const serverTool = events.find(
+      (e): e is Extract<AgentCoreEvent, { type: 'server_tool' }> => e.type === 'server_tool',
+    );
+    expect(serverTool).toBeDefined();
+    expect(serverTool!.toolType).toBe('openrouter:datetime');
+    expect(serverTool!.callId).toBe('st_dt');
+    expect(serverTool!.status).toBe('completed');
+    expect(serverTool!.isError).toBe(false);
+    expect(serverTool!.output).toEqual({ datetime: '2026-06-11T12:00:00Z', timezone: 'UTC' });
+  });
+});

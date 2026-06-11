@@ -55,6 +55,23 @@ export type TranscriptRecord = {
     v: typeof TRANSCRIPT_SCHEMA_VERSION;
     sessionId: string;
     ts: string;
+    kind: 'server_tool';
+    /** Full output-item discriminator, e.g. `"openrouter:web_search"`. */
+    toolType: string;
+    /** The item's `id` when the provider supplied one. */
+    callId?: string;
+    /** SDK `ToolCallStatus`: `"completed"` / `"in_progress"` / `"incomplete"`. */
+    status: string;
+    /** Best-effort model input (e.g. web_search `{ query }`); often absent. */
+    input?: unknown;
+    /** Result payload with the envelope keys (`type`/`id`/`status`) stripped. */
+    output: unknown;
+    /** Derived failure flag (web_fetch `error`, or non-`completed` status). */
+    isError: boolean;
+} | {
+    v: typeof TRANSCRIPT_SCHEMA_VERSION;
+    sessionId: string;
+    ts: string;
     kind: 'compact';
     reason: 'auto' | 'manual';
     droppedMessages: number;
@@ -100,6 +117,14 @@ export declare function logTranscriptToolResult(input: CommonInput & {
     name: string;
     isError: boolean;
     output: unknown;
+}): Promise<void>;
+export declare function logTranscriptServerTool(input: CommonInput & {
+    toolType: string;
+    callId?: string;
+    status: string;
+    input?: unknown;
+    output: unknown;
+    isError: boolean;
 }): Promise<void>;
 export declare function logTranscriptCompact(input: CommonInput & {
     reason: 'auto' | 'manual';

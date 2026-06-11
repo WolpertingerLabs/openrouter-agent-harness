@@ -7,10 +7,11 @@ import { allTools } from './tools/index.js';
 import { createSkillLoader, } from './skills/index.js';
 import { DEFAULT_SKILL_DESCRIPTION_BUDGET, buildSkillListing, } from './tools/skill.js';
 import { createServerToolsHooks } from './tools/server-tools.js';
+import { isServerToolOutputItem, normalizeServerToolItem } from './tools/server-tool-items.js';
 import { createFileStateAccessor } from './state/file-state.js';
 import { createMemoryStateAccessor } from './state/memory-state.js';
 import { createRequestId, createGenerationId, logRequest, logGeneration, logSessionStart, } from './logging/logger.js';
-import { logTranscriptSessionStart, logTranscriptUser, logTranscriptAssistant, logTranscriptToolResult, logTranscriptCompact, logTranscriptSessionEnd, } from './logging/transcript.js';
+import { logTranscriptSessionStart, logTranscriptUser, logTranscriptAssistant, logTranscriptToolResult, logTranscriptServerTool, logTranscriptCompact, logTranscriptSessionEnd, } from './logging/transcript.js';
 import { permissionModeToCanUseTool } from './permission-modes.js';
 import { buildToolFilterCanUseTool, compileRule } from './tool-filters.js';
 import { composeInstructions } from './context-discovery.js';
@@ -1544,6 +1545,37 @@ export class OpenRouterAgentRun {
                                     name: fnItem.name,
                                     input,
                                 };
+                            }
+                            else if (isServerToolOutputItem(item)) {
+                                // OpenRouter server-executed tools (datetime / web_search /
+                                // web_fetch). These bypass the client tool path entirely:
+                                // OpenRouter runs them and returns a single output item that
+                                // carries BOTH the invocation and its result. Emit a
+                                // `server_tool` event (and persist a matching transcript
+                                // record) so consumers can render them alongside client tools
+                                // without inventing a synthetic call/result pair.
+                                const normalized = normalizeServerToolItem(item);
+                                yield {
+                                    type: 'server_tool',
+                                    toolType: normalized.toolType,
+                                    ...(normalized.callId !== undefined && { callId: normalized.callId }),
+                                    status: normalized.status,
+                                    ...(normalized.input !== undefined && { input: normalized.input }),
+                                    output: normalized.output,
+                                    isError: normalized.isError,
+                                };
+                                if (persistSession) {
+                                    await logTranscriptServerTool({
+                                        logsRoot,
+                                        sessionId,
+                                        toolType: normalized.toolType,
+                                        callId: normalized.callId,
+                                        status: normalized.status,
+                                        input: normalized.input,
+                                        output: normalized.output,
+                                        isError: normalized.isError,
+                                    });
+                                }
                             }
                             continue;
                         }
