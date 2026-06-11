@@ -194,6 +194,38 @@ export async function* aggregateMessages(
         };
         break;
       }
+      case 'server_tool': {
+        // OpenRouter server-executed tools carry both invocation and result in
+        // one event. Project them onto the same tool_use → tool_result shape as
+        // client tools so the rich message stream renders them uniformly. The
+        // correlation id falls back to the toolType when the provider omitted an
+        // item id (the pair is still self-consistent within this turn).
+        const correlationId = event.callId ?? event.toolType;
+        const assistant = ensureAssistant();
+        assistant.content.push({
+          type: 'tool_use',
+          id: correlationId,
+          name: event.toolType,
+          input: event.input,
+        });
+        openText = null;
+        const flushed = flushOpenAssistant();
+        if (flushed) yield flushed;
+        const output =
+          typeof event.output === 'string' ? event.output : JSON.stringify(event.output);
+        yield {
+          type: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              toolUseId: correlationId,
+              output,
+              isError: event.isError,
+            },
+          ],
+        };
+        break;
+      }
       case 'turn_end': {
         const flushed = flushOpenAssistant();
         if (flushed) yield flushed;

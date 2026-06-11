@@ -10,7 +10,7 @@ export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFA
 export { accountInfo, supportedModels } from './openrouter-api.js';
 export { loadMcpConfig } from './mcp/config.js';
 export { McpBridge, MCP_TOOL_NAME_SEPARATOR, defaultClientFactory, mapMcpToolToTool, } from './mcp/bridge.js';
-export { TRANSCRIPT_SCHEMA_VERSION, logTranscriptSessionStart, logTranscriptUser, logTranscriptAssistant, logTranscriptToolResult, logTranscriptCompact, logTranscriptSessionEnd, readTranscript, } from './logging/transcript.js';
+export { TRANSCRIPT_SCHEMA_VERSION, logTranscriptSessionStart, logTranscriptUser, logTranscriptAssistant, logTranscriptToolResult, logTranscriptServerTool, logTranscriptCompact, logTranscriptSessionEnd, readTranscript, } from './logging/transcript.js';
 export { createSkillLoader, loadSkills, parseSkillFile, parseYamlFrontmatter, normalizeFrontmatterKeys, splitFrontmatter, splitShellArgs, renderSkillBody, substituteVariables, substituteArguments, skillFrontmatterSchema, SKILL_NAME_REGEX, MAX_PROJECT_WALK_DEPTH as MAX_SKILL_PROJECT_WALK_DEPTH, MAX_DESCRIPTION_CHARS as MAX_SKILL_DESCRIPTION_CHARS, MAX_WHEN_TO_USE_CHARS as MAX_SKILL_WHEN_TO_USE_CHARS, MAX_COMPATIBILITY_CHARS as MAX_SKILL_COMPATIBILITY_CHARS, DEFAULT_SHELL_TIMEOUT_MS as DEFAULT_SKILL_SHELL_TIMEOUT_MS, SHELL_DISABLED_MARKER as SKILL_SHELL_DISABLED_MARKER, } from './skills/index.js';
 export { skillTool, splitAllowedTools, buildSkillListing, DEFAULT_SKILL_DESCRIPTION_BUDGET, } from './tools/skill.js';
 export { createCommandLoader, parseCommandFile, COMMAND_NAMESPACE_SEPARATOR, } from './commands/index.js';

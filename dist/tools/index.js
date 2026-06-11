@@ -28,6 +28,7 @@ export { spawnSubagentTool, spawnSubagentsTool, DEFAULT_MAX_SUBAGENT_DEPTH, DEFA
 export { toolSearchTool, toolLoadTool, MAX_SCHEMA_PREVIEW_CHARS, SCHEMA_PREVIEW_TRUNCATION_MARKER, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, scoreMatch, tokenize, searchCatalog, buildSchemaPreview, } from './tool-search.js';
 export { skillTool, splitAllowedTools, buildSkillListing, DEFAULT_SKILL_DESCRIPTION_BUDGET, } from './skill.js';
 export { SERVER_TOOLS, createServerToolsHooks } from './server-tools.js';
+export { isServerToolOutputItem, normalizeServerToolItem, } from './server-tool-items.js';
 export { DEFAULT_TOOL_CONTEXT } from './context.js';
 /**
  * Build the default set of client tools bound to a {@link ToolContext}. Each

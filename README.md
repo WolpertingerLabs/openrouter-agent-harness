@@ -91,6 +91,7 @@ Discriminated union yielded by `for await (... of run)`. Narrow on `event.type`.
 | `text_delta`      | `{ content }`                                        | Streaming text chunk from the model.                                            |
 | `tool_call`       | `{ callId, name, input }`                            | Model has emitted a function call. `input` is parsed JSON when valid.           |
 | `tool_result`     | `{ callId, output, isError }`                        | Forwarded even after abort to surface cancellation observability.               |
+| `server_tool`     | `{ toolType, callId?, status, input?, output, isError }` | One per OpenRouter server-executed tool (`openrouter:datetime`/`web_search`/`web_fetch`). Carries both invocation and result — no client `canUseTool` gate. `input` is recoverable only for `web_search` (`{ query }`). |
 | `turn_end`        | `{ turnNumber, usage, costUsd }`                     | Per-turn close-out with cumulative cost.                                        |
 | `stream_complete` | `{ status, usage?, costUsd?, durationMs?, reason? }` | Terminal event. `status` is `success`/`max_turns`/`max_budget`/`error`.         |
 | `error`           | `{ message, cause? }`                                | Non-fatal error; always followed by a `stream_complete` with `status: 'error'`. |
@@ -126,8 +127,8 @@ for await (const msg of run.messages()) {
 | Message            | Aggregation rule                                                                                                                                                           |
 | ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `SystemMessage`    | One at the start (`session_start`) and one at the end (`session_end`), both carrying `sessionId`.                                                                          |
-| `AssistantMessage` | One per turn that produced text and/or tool calls. `text_delta`s concatenate into a `TextContent`; each `tool_call` becomes a `ToolUseContent`. Empty turns yield nothing. |
-| `UserMessage`      | One per `tool_result`. `output` is always stringified. Flushes any open `AssistantMessage` first so model output precedes its tool answer.                                 |
+| `AssistantMessage` | One per turn that produced text and/or tool calls. `text_delta`s concatenate into a `TextContent`; each `tool_call` (and each `server_tool`) becomes a `ToolUseContent`. Empty turns yield nothing. |
+| `UserMessage`      | One per `tool_result` (and per `server_tool`, which projects onto a `tool_use` + `tool_result` pair). `output` is always stringified. Flushes any open `AssistantMessage` first so model output precedes its tool answer. |
 | `ResultMessage`    | Mirrors `stream_complete` (status / usage / costUsd / durationMs / reason). Always followed by `SystemMessage{session_end}`.                                               |
 
 **One consumer per run.** `OpenRouterAgentRun` is single-shot — pick either `for await (... of run)` (raw events) **or** `run.messages()` (typed messages). The second call throws. Text and tool blocks within a single turn can interleave inside one `AssistantMessage` (Claude SDK parity: a tool call followed by more text opens a fresh `TextContent` after the `ToolUseContent`).

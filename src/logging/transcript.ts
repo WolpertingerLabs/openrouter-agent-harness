@@ -68,6 +68,24 @@ export type TranscriptRecord =
       v: typeof TRANSCRIPT_SCHEMA_VERSION;
       sessionId: string;
       ts: string;
+      kind: 'server_tool';
+      /** Full output-item discriminator, e.g. `"openrouter:web_search"`. */
+      toolType: string;
+      /** The item's `id` when the provider supplied one. */
+      callId?: string;
+      /** SDK `ToolCallStatus`: `"completed"` / `"in_progress"` / `"incomplete"`. */
+      status: string;
+      /** Best-effort model input (e.g. web_search `{ query }`); often absent. */
+      input?: unknown;
+      /** Result payload with the envelope keys (`type`/`id`/`status`) stripped. */
+      output: unknown;
+      /** Derived failure flag (web_fetch `error`, or non-`completed` status). */
+      isError: boolean;
+    }
+  | {
+      v: typeof TRANSCRIPT_SCHEMA_VERSION;
+      sessionId: string;
+      ts: string;
       kind: 'compact';
       reason: 'auto' | 'manual';
       droppedMessages: number;
@@ -191,6 +209,34 @@ export async function logTranscriptToolResult(
     name: input.name,
     isError: input.isError,
     output: input.output,
+  };
+  await appendRecord(input.logsRoot, record);
+}
+
+export async function logTranscriptServerTool(
+  input: CommonInput & {
+    toolType: string;
+    callId?: string;
+    status: string;
+    input?: unknown;
+    output: unknown;
+    isError: boolean;
+  },
+): Promise<void> {
+  const record: TranscriptRecord = {
+    v: TRANSCRIPT_SCHEMA_VERSION,
+    sessionId: input.sessionId,
+    ts: now(input),
+    kind: 'server_tool',
+    toolType: input.toolType,
+    // `JSON.stringify` drops undefined-valued keys, so set optionals
+    // unconditionally — the on-disk record stays compact (matches the
+    // convention in logTranscriptSessionStart / logTranscriptAssistant).
+    callId: input.callId,
+    status: input.status,
+    input: input.input,
+    output: input.output,
+    isError: input.isError,
   };
   await appendRecord(input.logsRoot, record);
 }

@@ -154,6 +154,7 @@ export {
   logTranscriptUser,
   logTranscriptAssistant,
   logTranscriptToolResult,
+  logTranscriptServerTool,
   logTranscriptCompact,
   logTranscriptSessionEnd,
   readTranscript,

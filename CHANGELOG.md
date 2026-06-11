@@ -9,6 +9,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Surface OpenRouter server tools (`openrouter:datetime` / `web_search` /
+  `web_fetch`) as first-class events and transcript records.** Server tools are
+  injected into the request and executed on OpenRouter's servers, returning a
+  single response output item that carries both the invocation and its result —
+  they never pass through the client `canUseTool` / tool-execution path. The run
+  loop previously dropped these items entirely: they produced no
+  `AgentCoreEvent` and were not persisted to `transcript.jsonl` (they survived
+  only in `state.json`, which most consumers don't read). Downstream UIs
+  therefore had no way to show that the model performed a web search / fetch /
+  datetime lookup.
+
+  This release adds:
+  - A new `AgentCoreEvent` variant `{ type: 'server_tool', toolType, callId?,
+    status, input?, output, isError }`, emitted once per `openrouter:*` response
+    output item. `input` carries the recoverable model input where one exists
+    (`web_search` → `{ query }`); `output` is the item payload with the
+    envelope keys (`type`/`id`/`status`) stripped; `isError` is derived from a
+    `web_fetch` `error` field or any non-`completed` status.
+  - A matching `server_tool` transcript record kind (additive — readers already
+    skip unknown `kind`s, so `TRANSCRIPT_SCHEMA_VERSION` is unchanged), written
+    in lockstep with the event when `persistSession` is on, plus a
+    `logTranscriptServerTool` writer.
+  - Rich-stream parity: `aggregateMessages` projects each `server_tool` event
+    onto a `tool_use` + `tool_result` pair (correlated by `callId`, falling back
+    to `toolType` when the provider omits an id) so `run.messages()` renders
+    server tools uniformly with client tools.
+  - Pure, SDK-free helpers `isServerToolOutputItem` / `normalizeServerToolItem`
+    (new module `tools/server-tool-items.ts`, re-exported from
+    `tools/server-tools.ts` and `tools/index.ts`) so the projection logic is
+    unit-testable and reusable by consumers.
+
 - **Bounded retry with backoff for transient `response.failed` errors.**
   A single transient upstream failure (`response.failed` with code
   `server_error` / `overloaded`, or an HTTP 5xx from the SDK) used to be
