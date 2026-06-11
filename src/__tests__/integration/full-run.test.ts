@@ -371,14 +371,14 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     >;
     expect(error).toBeDefined();
     expect(error.message).toBe(
-      'server_error: upstream provider returned an error: no endpoints available',
+      'server_error: upstream provider returned an error: no endpoints available (resp-failed-initial mock-model)',
     );
 
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.type).toBe('stream_complete');
     expect(complete.status).toBe('error');
     expect(complete.reason).toBe(
-      'server_error: upstream provider returned an error: no endpoints available',
+      'server_error: upstream provider returned an error: no endpoints available (resp-failed-initial mock-model)',
     );
 
     const stop = hookEvents.find((h) => h.event === 'Stop')!.payload as Extract<
@@ -387,7 +387,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     >;
     expect(stop.status).toBe('error');
     expect(stop.reason).toBe(
-      'server_error: upstream provider returned an error: no endpoints available',
+      'server_error: upstream provider returned an error: no endpoints available (resp-failed-initial mock-model)',
     );
   });
 
@@ -418,7 +418,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect(complete.type).toBe('stream_complete');
     expect(complete.status).toBe('error');
     expect(complete.reason).toBe(
-      'rate_limit_exceeded: provider rate limit exceeded on follow-up turn',
+      'rate_limit_exceeded: provider rate limit exceeded on follow-up turn (resp-failed-followup mock-model)',
     );
   });
 

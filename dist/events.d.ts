@@ -37,6 +37,14 @@ export type AgentCoreEvent = {
     type: 'error';
     message: string;
     cause?: unknown;
+    /**
+     * Structured failure context when one could be extracted: for an
+     * in-stream `response.failed` event — `responseId`, `model`, and
+     * OpenRouter routing metadata (`requested`, `region`, `routingSummary`,
+     * per-attempt `attempts: {model, provider, status}[]`); for an
+     * HTTP-level SDK error — `statusCode` and a truncated raw `body`.
+     */
+    detail?: Record<string, unknown>;
 };
 /**
  * Lifecycle hook event names fired by an {@link OpenRouterAgentRun}. Hooks are

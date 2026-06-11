@@ -2473,8 +2473,25 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           : err instanceof Error
             ? err.message
             : String(err);
-      logger?.('error', 'OpenRouterAgentRun stream errored', { message });
-      yield { type: 'error', message, cause: err };
+      // Structured failure context: routing metadata off the failed event, or
+      // statusCode/body off an HTTP-level SDK error. The serialized event is
+      // logger-only (it can be large); `detail` rides on the error event so
+      // hosts can log provider/attempt specifics without re-parsing `message`.
+      const detail =
+        pendingFailedEvent !== null
+          ? extractResponseFailedDetail(pendingFailedEvent)
+          : extractHttpErrorDetail(err);
+      logger?.('error', 'OpenRouterAgentRun stream errored', {
+        message,
+        ...(detail !== undefined && { detail }),
+        ...(pendingFailedEvent !== null && {
+          failedEvent: truncateForLog(
+            safeJsonStringify(pendingFailedEvent),
+            MAX_LOG_FAILED_EVENT_CHARS,
+          ),
+        }),
+      });
+      yield { type: 'error', message, cause: err, ...(detail !== undefined && { detail }) };
       yield {
         type: 'stream_complete',
         status: 'error',
@@ -2893,6 +2910,9 @@ function sleepWithAbort(ms: number, signal: AbortSignal): Promise<void> {
  * the SDK's HTTP-level `OpenRouterDefaultError`. Falls back, in order, to a
  * top-level `event.message` (what the follow-up `pipeAndConsumeStream` path
  * reads), then `response.incompleteDetails.reason`, then a generic label.
+ * When the event carries routing context ({@link extractResponseFailedDetail})
+ * a compact one-line suffix is appended — e.g.
+ * `server_error: Internal Server Error (resp_abc openai/gpt-5; attempts: openai→500)`.
  */
 function extractResponseFailedMessage(event: unknown): string {
   const e = event as {
@@ -2902,16 +2922,144 @@ function extractResponseFailedMessage(event: unknown): string {
       incompleteDetails?: { reason?: unknown } | null;
     } | null;
   };
+  const suffix = formatResponseFailedSuffix(extractResponseFailedDetail(event));
   const err = e.response?.error;
   if (err && typeof err.message === 'string' && err.message.length > 0) {
-    return typeof err.code === 'string' && err.code.length > 0
-      ? `${err.code}: ${err.message}`
-      : err.message;
+    const base =
+      typeof err.code === 'string' && err.code.length > 0
+        ? `${err.code}: ${err.message}`
+        : err.message;
+    return `${base}${suffix}`;
   }
-  if (typeof e.message === 'string' && e.message.length > 0) return e.message;
+  if (typeof e.message === 'string' && e.message.length > 0) return `${e.message}${suffix}`;
   const reason = e.response?.incompleteDetails?.reason;
-  if (typeof reason === 'string' && reason.length > 0) return reason;
-  return 'Response failed';
+  if (typeof reason === 'string' && reason.length > 0) return `${reason}${suffix}`;
+  return `Response failed${suffix}`;
+}
+
+/** A single normalized routing attempt extracted from `openrouterMetadata.attempts`. */
+type FailedAttempt = { model?: string; provider?: string; status?: number };
+
+/**
+ * Extract structured failure context from a `response.failed` event: the
+ * response `id`/`model` plus OpenRouter routing metadata (`openrouterMetadata`
+ * survives the SDK's parsing even though `response.error` itself is stripped
+ * to `{code, message}`). Every field is optional and unknown-shaped input
+ * never throws. Returns `undefined` when nothing usable is present.
+ */
+function extractResponseFailedDetail(event: unknown): Record<string, unknown> | undefined {
+  const resp = (event as { response?: unknown }).response;
+  if (resp === null || typeof resp !== 'object') return undefined;
+  const r = resp as {
+    id?: unknown;
+    model?: unknown;
+    openrouterMetadata?: {
+      summary?: unknown;
+      requested?: unknown;
+      region?: unknown;
+      attempts?: unknown;
+    } | null;
+  };
+  const detail: Record<string, unknown> = {};
+  if (typeof r.id === 'string') detail.responseId = r.id;
+  if (typeof r.model === 'string') detail.model = r.model;
+  const meta = r.openrouterMetadata;
+  if (meta !== null && meta !== undefined && typeof meta === 'object') {
+    if (typeof meta.summary === 'string') detail.routingSummary = meta.summary;
+    if (typeof meta.requested === 'string') detail.requested = meta.requested;
+    if (typeof meta.region === 'string') detail.region = meta.region;
+    if (Array.isArray(meta.attempts)) {
+      const attempts: FailedAttempt[] = [];
+      for (const raw of meta.attempts) {
+        if (raw === null || typeof raw !== 'object') continue;
+        const a = raw as { model?: unknown; provider?: unknown; status?: unknown };
+        const attempt: FailedAttempt = {};
+        if (typeof a.model === 'string') attempt.model = a.model;
+        if (typeof a.provider === 'string') attempt.provider = a.provider;
+        if (typeof a.status === 'number') attempt.status = a.status;
+        if (Object.keys(attempt).length > 0) attempts.push(attempt);
+      }
+      if (attempts.length > 0) detail.attempts = attempts;
+    }
+  }
+  return Object.keys(detail).length > 0 ? detail : undefined;
+}
+
+/** Cap on routing attempts rendered into the human-readable failure suffix. */
+const MAX_SUFFIX_ATTEMPTS = 5;
+/** Cap on the routing-summary excerpt rendered into the failure suffix. */
+const MAX_SUFFIX_SUMMARY_CHARS = 200;
+
+/**
+ * Render {@link extractResponseFailedDetail} output as a compact one-line
+ * ` (…)` suffix for the surfaced failure reason: response id + model, then
+ * up to {@link MAX_SUFFIX_ATTEMPTS} attempts as `provider→status`, then a
+ * truncated routing summary. Empty string when there is no detail.
+ */
+function formatResponseFailedSuffix(detail: Record<string, unknown> | undefined): string {
+  if (detail === undefined) return '';
+  const parts: string[] = [];
+  const head = [detail.responseId, detail.model].filter(
+    (v): v is string => typeof v === 'string' && v.length > 0,
+  );
+  if (head.length > 0) parts.push(head.join(' '));
+  const attempts = detail.attempts;
+  // The extractor only sets `attempts` when non-empty, so no length guard.
+  if (Array.isArray(attempts)) {
+    const rendered = (attempts as FailedAttempt[])
+      .slice(0, MAX_SUFFIX_ATTEMPTS)
+      .map((a) => `${a.provider ?? '?'}→${a.status ?? '?'}`);
+    const extra =
+      attempts.length > MAX_SUFFIX_ATTEMPTS
+        ? `, +${attempts.length - MAX_SUFFIX_ATTEMPTS} more`
+        : '';
+    parts.push(`attempts: ${rendered.join(', ')}${extra}`);
+  }
+  if (typeof detail.routingSummary === 'string' && detail.routingSummary.length > 0) {
+    parts.push(truncateForLog(detail.routingSummary, MAX_SUFFIX_SUMMARY_CHARS));
+  }
+  return parts.length > 0 ? ` (${parts.join('; ')})` : '';
+}
+
+/** Cap on the raw HTTP error body included in failure detail. */
+const MAX_DETAIL_BODY_CHARS = 2000;
+/** Cap on the serialized `response.failed` event included in logger fields. */
+const MAX_LOG_FAILED_EVENT_CHARS = 4000;
+
+/**
+ * Extract structured failure context from an HTTP-level SDK error: the
+ * `statusCode` and raw `body` that `@openrouter/sdk`'s `OpenRouterError`
+ * hierarchy exposes. Like {@link extractStatusCode}, checks the error itself
+ * then one `cause` hop. Returns `undefined` when neither is present.
+ */
+function extractHttpErrorDetail(err: unknown): Record<string, unknown> | undefined {
+  const statusCode = extractStatusCode(err);
+  const body = bodyAt(err) ?? bodyAt((err as { cause?: unknown } | null)?.cause);
+  const detail: Record<string, unknown> = {};
+  if (statusCode !== undefined) detail.statusCode = statusCode;
+  if (body !== undefined) detail.body = truncateForLog(body, MAX_DETAIL_BODY_CHARS);
+  return Object.keys(detail).length > 0 ? detail : undefined;
+}
+
+/** Read a non-empty string `body` property off an arbitrary value, if present. */
+function bodyAt(value: unknown): string | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const body = (value as { body?: unknown }).body;
+  return typeof body === 'string' && body.length > 0 ? body : undefined;
+}
+
+/** Truncate `value` to `max` characters, marking the cut. */
+function truncateForLog(value: string, max: number): string {
+  return value.length <= max ? value : `${value.slice(0, max)}…[truncated]`;
+}
+
+/** JSON-stringify that never throws (circular refs, BigInt, …). */
+function safeJsonStringify(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**

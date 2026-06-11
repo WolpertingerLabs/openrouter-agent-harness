@@ -4,6 +4,33 @@ export const SERVER_TOOLS = [
     { type: 'openrouter:web_search' },
     { type: 'openrouter:web_fetch' },
 ];
+/** Cap on the upstream `raw` error excerpt appended to HTTP error reasons. */
+const MAX_RAW_METADATA_CHARS = 500;
+/**
+ * Render OpenRouter's `error.metadata` (`provider_name`, `raw` upstream error)
+ * as a compact `provider=…, raw=…` fragment. Empty string when the metadata is
+ * absent or carries neither field. Never throws on unknown shapes.
+ */
+function formatErrorMetadata(metadata) {
+    if (metadata === null || typeof metadata !== 'object')
+        return '';
+    const m = metadata;
+    const parts = [];
+    if (typeof m.provider_name === 'string' && m.provider_name.length > 0) {
+        parts.push(`provider=${m.provider_name}`);
+    }
+    if (m.raw !== undefined && m.raw !== null) {
+        // `metadata` is JSON.parse output, so stringify cannot throw (no cycles)
+        // and cannot return undefined (raw is guarded against undefined).
+        let raw = typeof m.raw === 'string' ? m.raw : JSON.stringify(m.raw);
+        if (raw.length > MAX_RAW_METADATA_CHARS) {
+            raw = `${raw.slice(0, MAX_RAW_METADATA_CHARS)}…[truncated]`;
+        }
+        if (raw.length > 0)
+            parts.push(`raw=${raw}`);
+    }
+    return parts.join(', ');
+}
 export function createServerToolsHooks() {
     const hooks = new SDKHooks();
     hooks.registerBeforeCreateRequestHook({
@@ -45,10 +72,20 @@ export function createServerToolsHooks() {
                     try {
                         const parsed = JSON.parse(rawBody);
                         if (parsed && typeof parsed === 'object') {
-                            const msg = parsed.error?.message ??
-                                parsed.message;
+                            const errField = parsed
+                                .error;
+                            const msg = errField?.message ?? parsed.message;
                             if (typeof msg === 'string' && msg.length > 0) {
                                 extracted = msg;
+                            }
+                            // OpenRouter wraps upstream provider failures in a generic
+                            // message and puts the specifics in `error.metadata`
+                            // (`provider_name` + the provider's `raw` error). Append a
+                            // compact rendering so the surfaced reason names the actual
+                            // upstream failure, not just "Provider returned error".
+                            const metaSuffix = formatErrorMetadata(errField?.metadata);
+                            if (extracted !== undefined && metaSuffix.length > 0) {
+                                extracted = `${extracted} [${metaSuffix}]`;
                             }
                         }
                     }
