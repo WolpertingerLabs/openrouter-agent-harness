@@ -270,3 +270,117 @@ describe('API error propagation — Fix 2 (defense-in-depth: silent stream + get
     expect(getResponseSpy).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('HTTP-level error detail extraction', () => {
+  /**
+   * Builds an Error shaped like the SDK's OpenRouterError hierarchy —
+   * `statusCode` and raw `body` as own properties.
+   */
+  function makeSdkError(message: string, props: Record<string, unknown>): Error {
+    return Object.assign(new Error(message), props);
+  }
+
+  function makeThrowingCallModelWith(error: Error) {
+    return () => ({
+      cancel: async () => undefined,
+      // eslint-disable-next-line require-yield -- throwing before any yield is the point
+      async *getFullResponsesStream(): AsyncGenerator<unknown> {
+        throw error;
+      },
+      async getResponse() {
+        throw error;
+      },
+    });
+  }
+
+  async function detailFor(
+    error: Error,
+  ): Promise<{ events: AgentCoreEvent[]; fields: Record<string, unknown> | undefined }> {
+    callModelMock.mockImplementation(makeThrowingCallModelWith(error));
+    let captured: Record<string, unknown> | undefined;
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: `sess-http-detail-${Date.now()}`,
+      prompt: 'hi',
+      persistSession: false,
+      disableServerTools: true,
+      logger: (_level, message, fields) => {
+        if (message === 'OpenRouterAgentRun stream errored') captured = fields;
+      },
+    });
+    const events = await collectEvents(run);
+    return { events, fields: captured };
+  }
+
+  function errorEventOf(events: AgentCoreEvent[]): Extract<AgentCoreEvent, { type: 'error' }> {
+    const ev = events.find((e) => e.type === 'error');
+    expect(ev).toBeDefined();
+    return ev as Extract<AgentCoreEvent, { type: 'error' }>;
+  }
+
+  it('exposes statusCode and body from the thrown SDK error', async () => {
+    const body =
+      '{"error":{"code":500,"message":"Provider returned error","metadata":{"provider_name":"openai"}}}';
+    const { events, fields } = await detailFor(
+      makeSdkError('Internal Server Error', { statusCode: 500, body }),
+    );
+    const expected = { statusCode: 500, body };
+    expect(errorEventOf(events).detail).toEqual(expected);
+    expect(fields?.detail).toEqual(expected);
+    // No response.failed event was captured, so no serialized event rides along.
+    expect(fields && 'failedEvent' in fields).toBe(false);
+  });
+
+  it('finds statusCode/body one cause hop down (silent-stream wrap path)', async () => {
+    // The defense-in-depth path rethrows as `new Error(msg, { cause })`.
+    const sdkErr = makeSdkError('boom', { statusCode: 502, body: 'bad gateway body' });
+    callModelMock.mockImplementation(() => ({
+      cancel: async () => undefined,
+      async *getFullResponsesStream(): AsyncGenerator<unknown> {
+        // Yields nothing — silent stream; getResponse rejects with the SDK error.
+      },
+      async getResponse() {
+        throw sdkErr;
+      },
+    }));
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: `sess-http-detail-cause-${Date.now()}`,
+      prompt: 'hi',
+      persistSession: false,
+      disableServerTools: true,
+    });
+    const events = await collectEvents(run);
+    expect(errorEventOf(events).detail).toEqual({ statusCode: 502, body: 'bad gateway body' });
+  });
+
+  it('truncates an oversized body at 2000 chars', async () => {
+    const { events } = await detailFor(
+      makeSdkError('big', { statusCode: 500, body: 'b'.repeat(3000) }),
+    );
+    const detail = errorEventOf(events).detail!;
+    expect(detail.statusCode).toBe(500);
+    expect((detail.body as string).endsWith('…[truncated]')).toBe(true);
+    expect((detail.body as string).length).toBe(2000 + '…[truncated]'.length);
+  });
+
+  it('includes only the fields that are present and well-typed', async () => {
+    // body present without statusCode.
+    const { events: bodyOnly } = await detailFor(makeSdkError('e', { body: 'raw text' }));
+    expect(errorEventOf(bodyOnly).detail).toEqual({ body: 'raw text' });
+    // statusCode present; body wrong type / empty string / cause not an object.
+    const { events: codeOnly } = await detailFor(
+      makeSdkError('e', { statusCode: 503, body: 42, cause: 'not-an-object' }),
+    );
+    expect(errorEventOf(codeOnly).detail).toEqual({ statusCode: 503 });
+    const { events: emptyBody } = await detailFor(makeSdkError('e', { statusCode: 503, body: '' }));
+    expect(errorEventOf(emptyBody).detail).toEqual({ statusCode: 503 });
+  });
+
+  it('omits detail entirely for plain errors with no HTTP context', async () => {
+    const { events, fields } = await detailFor(new Error('plain failure'));
+    const ev = errorEventOf(events);
+    expect('detail' in ev).toBe(false);
+    expect(fields && 'detail' in fields).toBe(false);
+  });
+});

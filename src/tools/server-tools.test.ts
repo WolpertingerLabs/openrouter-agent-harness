@@ -161,4 +161,74 @@ describe('createServerToolsHooks — afterError hook', () => {
     expect((result.error as Error).message).toMatch(/429/);
     expect((result.error as Error).message).toContain('over quota');
   });
+
+  async function messageFor(payload: unknown, status = 500): Promise<string> {
+    const response = new Response(JSON.stringify(payload), {
+      status,
+      statusText: 'Internal Server Error',
+    });
+    const result = await callAfterError(response, null);
+    expect(result.error).toBeInstanceOf(Error);
+    return (result.error as Error).message;
+  }
+
+  it('appends provider_name and raw upstream error from error.metadata', async () => {
+    const msg = await messageFor({
+      error: {
+        message: 'Provider returned error',
+        metadata: { provider_name: 'Kluster', raw: 'error code: 1015' },
+      },
+    });
+    expect(msg).toBe(
+      'OpenRouter request failed (500): Provider returned error [provider=Kluster, raw=error code: 1015]',
+    );
+  });
+
+  it('JSON-stringifies a non-string raw metadata value', async () => {
+    const msg = await messageFor({
+      error: {
+        message: 'Provider returned error',
+        metadata: { provider_name: 'openai', raw: { code: 500, detail: 'upstream exploded' } },
+      },
+    });
+    expect(msg).toContain('[provider=openai, raw={"code":500,"detail":"upstream exploded"}]');
+  });
+
+  it('truncates an oversized raw metadata value at 500 chars', async () => {
+    const msg = await messageFor({
+      error: {
+        message: 'Provider returned error',
+        metadata: { raw: 'r'.repeat(800) },
+      },
+    });
+    expect(msg).toContain(`[raw=${'r'.repeat(500)}…[truncated]]`);
+  });
+
+  it('renders provider_name alone when raw is absent or null', async () => {
+    expect(
+      await messageFor({
+        error: { message: 'failed', metadata: { provider_name: 'Anthropic', raw: null } },
+      }),
+    ).toContain('failed [provider=Anthropic]');
+  });
+
+  it('omits the metadata suffix when metadata is absent, non-object, or empty', async () => {
+    expect(await messageFor({ error: { message: 'plain' } })).toBe(
+      'OpenRouter request failed (500): plain',
+    );
+    expect(await messageFor({ error: { message: 'plain', metadata: 'nope' } })).toBe(
+      'OpenRouter request failed (500): plain',
+    );
+    expect(
+      await messageFor({ error: { message: 'plain', metadata: { provider_name: '', raw: '' } } }),
+    ).toBe('OpenRouter request failed (500): plain');
+  });
+
+  it('does not append metadata when no message could be extracted', async () => {
+    // metadata present but neither error.message nor top-level message —
+    // `extracted` stays undefined, so the raw body is used verbatim.
+    const payload = { error: { metadata: { provider_name: 'openai' } } };
+    const msg = await messageFor(payload);
+    expect(msg).toBe(`OpenRouter request failed (500): ${JSON.stringify(payload)}`);
+  });
 });
