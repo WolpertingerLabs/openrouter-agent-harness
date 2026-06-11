@@ -167,31 +167,36 @@ describe('resolveCompactionThresholdTokens', () => {
   describe('Phase 7.1 absolute-buffer shape (reserveOpts)', () => {
     it('subtracts the default reserve + buffer from the window when reserveOpts is passed', () => {
       const tokens = getModelContextWindow('anthropic/claude-sonnet-4.6'); // 200k
-      expect(resolveCompactionThresholdTokens(undefined, 'anthropic/claude-sonnet-4.6', {}, {})).toBe(
-        tokens - DEFAULT_OUTPUT_RESERVE_TOKENS - DEFAULT_SAFETY_BUFFER_TOKENS,
-      );
+      expect(
+        resolveCompactionThresholdTokens(undefined, 'anthropic/claude-sonnet-4.6', {}, {}),
+      ).toBe(tokens - DEFAULT_OUTPUT_RESERVE_TOKENS - DEFAULT_SAFETY_BUFFER_TOKENS);
     });
 
     it('honours explicit reserve + buffer overrides', () => {
       expect(
-        resolveCompactionThresholdTokens(undefined, 'custom/m', { 'custom/m': 100_000 }, {
-          outputReserveTokens: 10_000,
-          safetyBufferTokens: 5_000,
-        }),
+        resolveCompactionThresholdTokens(
+          undefined,
+          'custom/m',
+          { 'custom/m': 100_000 },
+          {
+            outputReserveTokens: 10_000,
+            safetyBufferTokens: 5_000,
+          },
+        ),
       ).toBe(85_000);
     });
 
     it('floors at 25% of the window when reserve+buffer would go negative', () => {
       // 16k window, reserve(20k)+buffer(8k) → negative → floor(16k*0.25)=4000.
-      expect(
-        resolveCompactionThresholdTokens(undefined, 'tiny/m', { 'tiny/m': 16_000 }, {}),
-      ).toBe(4_000);
+      expect(resolveCompactionThresholdTokens(undefined, 'tiny/m', { 'tiny/m': 16_000 }, {})).toBe(
+        4_000,
+      );
     });
 
     it('still honours an explicit configured threshold even when reserveOpts is passed', () => {
-      expect(
-        resolveCompactionThresholdTokens(12_345, 'anthropic/claude-sonnet-4.6', {}, {}),
-      ).toBe(12_345);
+      expect(resolveCompactionThresholdTokens(12_345, 'anthropic/claude-sonnet-4.6', {}, {})).toBe(
+        12_345,
+      );
     });
 
     it('exposes sane default reserve / buffer constants', () => {

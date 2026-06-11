@@ -28,7 +28,7 @@ vi.mock('../../tools/server-tools.js', () => ({
   createServerToolsHooks: () => ({}),
 }));
 
-import { OpenRouterAgentRun } from '../../index.js';
+import { OpenRouterAgentRun, MODEL_CONTEXT_LENGTH_CACHE } from '../../index.js';
 import type { AgentCoreEvent, HookEvent, HookPayload } from '../../index.js';
 
 const SESSION = 'integration-compaction';
@@ -445,8 +445,13 @@ describe('integration: context compaction', () => {
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.status).toBe('success');
 
-    // The logger captured the failure record.
-    const failureLog = logEntries.find((l) => l.message === 'Auto-compaction failed');
+    // The logger captured the failure record. Phase 7.1: a single-input run
+    // crossing the threshold compacts mid-run (at the top of the next loop
+    // iteration) rather than at run end, so accept either failure message.
+    const failureLog = logEntries.find(
+      (l) =>
+        l.message === 'Auto-compaction failed' || l.message === 'Mid-run auto-compaction failed',
+    );
     expect(failureLog).toBeDefined();
     expect(failureLog?.level).toBe('error');
   });
@@ -787,7 +792,7 @@ describe('integration: context compaction', () => {
     expect(hookEvents).not.toContain('PreCompact');
   });
 
-  it('tokenCounter mode: derives the default TOKEN threshold from modelContextWindows overrides', async () => {
+  it('real-token trigger: modelContextWindows overrides feed the window when the live lookup fails', async () => {
     await seedState({
       logsRoot,
       sessionId: SESSION,
@@ -798,26 +803,38 @@ describe('integration: context compaction', () => {
       ],
     });
     state.fixtureQueue = [parentFixture(), compactFixture('OVERRIDE-SUMMARY')];
+    // The live /models lookup is offline → the per-run override is the
+    // resolution layer that actually decides the window.
+    MODEL_CONTEXT_LENGTH_CACHE.clear();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(() => Promise.reject(new Error('offline'))),
+    );
 
     const hookEvents: HookEvent[] = [];
-    const run = new OpenRouterAgentRun({
-      apiKey: 'sk-test',
-      sessionId: SESSION,
-      prompt: 'continue',
-      logsRoot,
-      // 'tiny/model' is unknown to the static table (would default to 128k →
-      // threshold 102_400 tokens). The override teaches a 100-token window →
-      // threshold floor(100 * 0.8) = 80; the counter's 80 crosses it.
-      model: 'tiny/model',
-      modelContextWindows: { 'tiny/model': 100 },
-      tokenCounter: () => 80,
-      keepRecentTurns: 1,
-      onHook: (event) => {
-        hookEvents.push(event);
-      },
-    });
+    try {
+      const run = new OpenRouterAgentRun({
+        apiKey: 'sk-test',
+        sessionId: SESSION,
+        prompt: 'continue',
+        logsRoot,
+        // 'tiny/model' is unknown to the static table (would default to 128k →
+        // a ~100k-token threshold). The override teaches a 40-token window →
+        // absolute-buffer threshold floors at floor(40 * 0.25) = 10; the
+        // fixture's real usage.inputTokens of 10 crosses it.
+        model: 'tiny/model',
+        modelContextWindows: { 'tiny/model': 40 },
+        keepRecentTurns: 1,
+        onHook: (event) => {
+          hookEvents.push(event);
+        },
+      });
 
-    for await (const _ of run) void _;
+      for await (const _ of run) void _;
+    } finally {
+      vi.unstubAllGlobals();
+      MODEL_CONTEXT_LENGTH_CACHE.clear();
+    }
 
     expect(hookEvents).toContain('PreCompact');
     expect(state.callModelArgs.length).toBe(2);

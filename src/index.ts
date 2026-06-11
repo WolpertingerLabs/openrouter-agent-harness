@@ -1,4 +1,4 @@
-export { OpenRouterAgentRun, DEFAULT_INSTRUCTIONS } from './agent.js';
+export { OpenRouterAgentRun, DEFAULT_INSTRUCTIONS, MODEL_CONTEXT_LENGTH_CACHE } from './agent.js';
 export type {
   OpenRouterAgentRunOptions,
   AgentLogger,
@@ -108,8 +108,11 @@ export {
   CHARS_PER_TOKEN,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   DEFAULT_KEEP_RECENT_TURNS,
+  DEFAULT_OUTPUT_RESERVE_TOKENS,
+  DEFAULT_SAFETY_BUFFER_TOKENS,
   DEFAULT_THRESHOLD_RATIO,
   MODEL_CONTEXT_WINDOWS,
+  estimateInstructionsAndToolsTokens,
   estimateMessagesCharLength,
   getModelContextWindow,
   partitionMessages,
@@ -119,7 +122,12 @@ export {
 } from './compaction.js';
 export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 export type { StallMonitor } from './stall.js';
-export { accountInfo, supportedModels } from './openrouter-api.js';
+export {
+  accountInfo,
+  supportedModels,
+  ModelContextLengthCache,
+  MODEL_CONTEXT_LENGTH_CACHE_TTL_MS,
+} from './openrouter-api.js';
 export type { AccountInfo, ModelInfo } from './openrouter-api.js';
 export { loadMcpConfig } from './mcp/config.js';
 export type {

@@ -11,9 +11,9 @@ export type EditNotebookResult = EditNotebookSuccess | EditNotebookError;
 export declare function editNotebookTool(ctx?: ToolContext): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     path: z.ZodString;
     operation: z.ZodEnum<{
+        delete: "delete";
         replace_source: "replace_source";
         insert: "insert";
-        delete: "delete";
         change_type: "change_type";
     }>;
     cell_index: z.ZodNumber;

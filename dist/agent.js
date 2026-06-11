@@ -1,7 +1,8 @@
 import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isToolCallOutputEvent, isClientTool, } from '@openrouter/agent';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { COMPACTION_PROMPT, DEFAULT_KEEP_RECENT_TURNS, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+import { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_KEEP_RECENT_TURNS, estimateInstructionsAndToolsTokens, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+import { ModelContextLengthCache } from './openrouter-api.js';
 import { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 import { allTools } from './tools/index.js';
 import { createSkillLoader, } from './skills/index.js';
@@ -24,6 +25,14 @@ import { StreamingInputSource, commitPartialResponse, isAsyncIterable, setInterr
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
 const DEFAULT_MAX_TURNS = 25;
 const DEFAULT_MAX_BUDGET_USD = 1.0;
+/**
+ * Phase 7.1: process-wide cache for the OR `/api/v1/models` context-window
+ * table. Shared across runs so a callboard cron firing one short session per
+ * minute resolves windows from memory after the first fetch. Failure-tolerant
+ * (network errors return `null` → static-table fallback), so compaction never
+ * gains a hard network dependency. Exported for test reset.
+ */
+export const MODEL_CONTEXT_LENGTH_CACHE = new ModelContextLengthCache();
 const DEFAULT_APP_TITLE = 'openrouter-agent-harness';
 const ABORT_REASON = 'aborted';
 /**
@@ -154,6 +163,15 @@ function resolveOptions(opts) {
             modelContextWindows: opts.modelContextWindows,
         }),
         ...(opts.tokenCounter !== undefined && { tokenCounter: opts.tokenCounter }),
+        ...(opts.contextWindowTokens !== undefined && {
+            contextWindowTokens: opts.contextWindowTokens,
+        }),
+        ...(opts.outputReserveTokens !== undefined && {
+            outputReserveTokens: opts.outputReserveTokens,
+        }),
+        ...(opts.safetyBufferTokens !== undefined && {
+            safetyBufferTokens: opts.safetyBufferTokens,
+        }),
         keepRecentTurns: opts.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS,
         autoCompact: opts.autoCompact ?? true,
         ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
@@ -434,6 +452,18 @@ export class OpenRouterAgentRun {
         if (this.#isIterating) {
             throw new Error('Cannot call compact() while iterate() is in progress — see the Mid-run safety note in the README.');
         }
+        await this.#performCompaction(reason);
+    }
+    /**
+     * Phase 7.1: the guard-free compaction body. {@link compact} delegates here
+     * after enforcing the public mid-iterate guard; the in-iterate mid-run
+     * trigger calls this directly **between** `callModel` cycles (where no SDK
+     * stream is active and `state.save()` has already settled for the prior
+     * cycle) — exactly the safe window the public guard is designed to protect.
+     * The run-end auto-trigger in `iterate()`'s `finally` likewise routes
+     * through {@link compact} only after clearing `#isIterating`.
+     */
+    async #performCompaction(reason) {
         const state = await this.stateAccessor.load();
         if (!state)
             return;
@@ -540,6 +570,88 @@ export class OpenRouterAgentRun {
         }
         const thresholdChars = resolveCompactionThresholdChars(compactionThreshold, model, modelContextWindows);
         return serialized.length >= thresholdChars;
+    }
+    /**
+     * Phase 7.1: resolve the active model's context window (in **tokens**) with
+     * the documented precedence:
+     *
+     *   explicit {@link OpenRouterAgentRunOptions.contextWindowTokens} → live
+     *   OR `/api/v1/models` lookup → static table / per-run
+     *   {@link OpenRouterAgentRunOptions.modelContextWindows} overrides via
+     *   {@link getModelContextWindow} → 128k fallback.
+     *
+     * The live lookup is lazy, cached ({@link MODEL_CONTEXT_LENGTH_CACHE}), and
+     * failure-tolerant — a network or parse error falls through to the static
+     * resolution, so compaction never gains a hard network dependency. Codex
+     * precedent: the static table is a fallback, not the source of truth.
+     */
+    async resolveContextWindowTokens() {
+        if (this.opts.contextWindowTokens !== undefined) {
+            return this.opts.contextWindowTokens;
+        }
+        let live;
+        try {
+            live = await MODEL_CONTEXT_LENGTH_CACHE.get({
+                model: this.opts.model,
+                apiKey: this.opts.apiKey,
+                ...(this.opts.baseUrl !== undefined && { baseUrl: this.opts.baseUrl }),
+            });
+        }
+        catch {
+            // ModelContextLengthCache.get() is contractually non-throwing, but
+            // guard anyway so a future change can never turn compaction into a
+            // hard network dependency.
+            live = null;
+        }
+        if (live !== null && live > 0)
+            return live;
+        return getModelContextWindow(this.opts.model, this.opts.modelContextWindows);
+    }
+    /**
+     * Phase 7.1: decide whether observed input-token usage has crossed the
+     * auto-compaction threshold. `realInputTokens` is the server-reported
+     * `usage.inputTokens` from the latest response when available — the most
+     * accurate currency there is; on the first turn of a fresh session (no
+     * sample yet) the caller passes `null` and this method falls back to a
+     * chars/{@link CHARS_PER_TOKEN} estimate of the message history **plus**
+     * the otherwise-uncounted `instructions` + tool-schema prefix
+     * ({@link estimateInstructionsAndToolsTokens}).
+     *
+     * An explicit {@link OpenRouterAgentRunOptions.compactionThreshold} wins
+     * outright: the check delegates to {@link isOverCompactionThreshold}
+     * verbatim (chars without a `tokenCounter`, tokens with one — the merged
+     * v1 semantics) and the live `/models` lookup is never consulted.
+     *
+     * Otherwise the threshold takes the absolute-buffer shape
+     * `window − outputReserve − safetyBuffer` (floored at 25% of the window —
+     * see {@link resolveCompactionThresholdTokens}), with the window resolved
+     * by {@link resolveContextWindowTokens} so a live `/models` value actually
+     * takes effect.
+     */
+    async shouldCompactForRealTokens(realInputTokens, messages) {
+        if (this.opts.compactionThreshold !== undefined) {
+            return this.isOverCompactionThreshold(messages);
+        }
+        const window = await this.resolveContextWindowTokens();
+        // Inject the live-resolved window through the resolver's overrides param
+        // (exact-match lookup) so the absolute-buffer math + 25% floor live in
+        // ONE tested place rather than being duplicated here.
+        const thresholdTokens = resolveCompactionThresholdTokens(undefined, this.opts.model, { [this.opts.model]: window }, {
+            ...(this.opts.outputReserveTokens !== undefined && {
+                outputReserveTokens: this.opts.outputReserveTokens,
+            }),
+            ...(this.opts.safetyBufferTokens !== undefined && {
+                safetyBufferTokens: this.opts.safetyBufferTokens,
+            }),
+        });
+        const observed = realInputTokens !== null && realInputTokens > 0
+            ? realInputTokens
+            : Math.ceil(serializeMessagesForEstimate(messages).length / CHARS_PER_TOKEN) +
+                estimateInstructionsAndToolsTokens({
+                    instructions: this.opts.instructions,
+                    tools: this.opts.tools,
+                });
+        return observed >= thresholdTokens;
     }
     /**
      * Abort the in-flight run. Fires the run's internal AbortController, which
@@ -681,6 +793,10 @@ export class OpenRouterAgentRun {
         let maxTurnNumber = 0;
         let totalCostUsd = 0;
         let finalUsage = null;
+        // Phase 7.1: hoisted so the `finally` run-end auto-compaction can read
+        // the same mid-run signal the loop sets after the final cycle. See the
+        // loop's step-6 threshold check and the run-end block in `finally`.
+        let pendingMidRunCompaction = false;
         // Tool call_id → tool_name, populated when the SDK emits a function_call
         // item and read when the matching tool_call_output arrives. The output
         // event carries only the callId, so a side-map is the cheapest way to
@@ -918,6 +1034,15 @@ export class OpenRouterAgentRun {
                     }),
                     ...(this.opts.modelParams !== undefined && { modelParams: this.opts.modelParams }),
                     ...(this.opts.tokenCounter !== undefined && { tokenCounter: this.opts.tokenCounter }),
+                    ...(this.opts.contextWindowTokens !== undefined && {
+                        contextWindowTokens: this.opts.contextWindowTokens,
+                    }),
+                    ...(this.opts.outputReserveTokens !== undefined && {
+                        outputReserveTokens: this.opts.outputReserveTokens,
+                    }),
+                    ...(this.opts.safetyBufferTokens !== undefined && {
+                        safetyBufferTokens: this.opts.safetyBufferTokens,
+                    }),
                     appTitle,
                     logsRoot,
                     persistSession,
@@ -1244,7 +1369,39 @@ export class OpenRouterAgentRun {
             // state — the retry continues from history, never duplicating them).
             // Cleared on any successfully-completed cycle.
             let retryState = null;
+            // Phase 7.1: mid-run auto-compaction (Codex-style "mark-full → compact
+            // at the top of the next turn"). After each cycle completes we compare
+            // the server-reported `usage.inputTokens` against the resolved token
+            // threshold; when it crosses, `pendingMidRunCompaction` (hoisted to the
+            // method scope above) is set and the NEXT loop iteration compacts the
+            // persisted state BEFORE pulling new input and firing the next
+            // callModel. This keeps the in-memory `ConversationState` /
+            // `state.save()` race closed (the SDK stream for the prior cycle has
+            // already settled) — the same safe window the public `compact()` guard
+            // protects — without the guard ever tripping. When the loop exits with
+            // the flag still set (no further cycle consumed it), the run-end block
+            // in `finally` performs the compaction instead.
             while (true) {
+                // Phase 7.1: honour a mid-run compaction marked at the end of the
+                // previous cycle. Failures are logged + swallowed so a wedged
+                // summarizer never takes down the live run (Card 7.3 hardens the
+                // summarizer itself).
+                if (pendingMidRunCompaction) {
+                    pendingMidRunCompaction = false;
+                    if (this.opts.autoCompact && persistSession) {
+                        try {
+                            // Compaction rewrites `messages` and clears
+                            // `previousResponseId` through the SHARED state accessor; the
+                            // next cycle's `callModel({ state })` resumes from the
+                            // condensed history with no further reload needed (the
+                            // accessor is the source of truth).
+                            await this.#performCompaction('auto');
+                        }
+                        catch (err) {
+                            logger?.('error', 'Mid-run auto-compaction failed', { error: err });
+                        }
+                    }
+                }
                 let cycleRequestId;
                 let cycleInput;
                 if (retryState === null) {
@@ -1828,6 +1985,32 @@ export class OpenRouterAgentRun {
                     maxTurns,
                 });
                 status = cycleStatus;
+                // Phase 7.1: mid-run trigger. The cycle completed; compare the
+                // server-reported real input tokens (the most accurate currency
+                // available — see `toTranscriptUsage`) against the resolved token
+                // threshold. When it crosses, mark for compaction. If another cycle
+                // follows (the `success` path falls through to pull more input), the
+                // loop-top consumes the flag and compacts BEFORE the next callModel,
+                // protecting long multi-input runs that drain many turns. When the
+                // loop instead exits here (`max_turns` / `max_budget`, or input
+                // exhaustion after a `success` cycle), the run-end block in `finally`
+                // performs the compaction. Either way the threshold is evaluated for
+                // every non-error cycle exit. Gated on persistSession: a
+                // non-persistent session has no resume path that benefits.
+                // Failure-tolerant — a threshold check that throws must never break
+                // the live run.
+                if (this.opts.autoCompact && persistSession) {
+                    try {
+                        const realInputTokens = typeof finalUsage?.inputTokens === 'number' ? finalUsage.inputTokens : null;
+                        const midRunState = (await this.stateAccessor.load());
+                        if (await this.shouldCompactForRealTokens(realInputTokens, midRunState?.messages)) {
+                            pendingMidRunCompaction = true;
+                        }
+                    }
+                    catch (err) {
+                        logger?.('warn', 'Mid-run compaction threshold check failed', { error: err });
+                    }
+                }
                 if (cycleStatus === 'max_budget' || cycleStatus === 'max_turns') {
                     break;
                 }
@@ -1975,20 +2158,33 @@ export class OpenRouterAgentRun {
             // Clear the iter guard BEFORE the auto-compact call so the auto-trigger
             // (which calls this.compact('auto')) does not throw on its own guard.
             this.#isIterating = false;
-            // Phase 5.1: auto-compaction fires here (in the generator's `finally`)
-            // so it triggers on any non-error completion regardless of whether the
-            // consumer drained to end-of-stream or `break`ed early on
+            // Phase 5.1 / 7.1: auto-compaction fires here (in the generator's
+            // `finally`) so it triggers on any non-error completion regardless of
+            // whether the consumer drained to end-of-stream or `break`ed early on
             // `stream_complete` — the generator's `return()` still runs finally.
             // `max_turns` / `max_budget` runs still produced a useful turn worth
             // condensing. Errors from the summarizer call are caught so the
             // SessionEnd / Stop hook bracket below still fires.
-            if (this.opts.autoCompact && status !== 'error') {
+            //
+            // Phase 7.1: the run-end check reuses the SAME mid-run signal. The
+            // final cycle's real-token threshold comparison (step 6 in the loop)
+            // sets `pendingMidRunCompaction`; when the loop exited before a NEXT
+            // cycle consumed it (input exhausted / stop condition), we compact
+            // here. Collapsing mid-run + run-end into one signal means a run never
+            // double-compacts the same history (loop-top + run-end).
+            //
+            // Gating: skip when the session is not expected to resume — a
+            // `persistSession: false` run has no on-disk state to condense for a
+            // future run, so paying for a summarizer call at run end is pure waste
+            // (the common cron-one-shot footgun). `status !== 'error'` keeps the
+            // run-end summarizer off the failure path.
+            if (this.opts.autoCompact &&
+                status !== 'error' &&
+                persistSession &&
+                pendingMidRunCompaction) {
+                // No flag reset — `finally` is the last code to touch it.
                 try {
-                    const persistedState = await this.stateAccessor.load();
-                    const messages = persistedState?.messages;
-                    if (this.isOverCompactionThreshold(messages)) {
-                        await this.compact('auto');
-                    }
+                    await this.compact('auto');
                 }
                 catch (err) {
                     logger?.('error', 'Auto-compaction failed', { error: err });
