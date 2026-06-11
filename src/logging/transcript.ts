@@ -97,6 +97,23 @@ export type TranscriptRecord =
       v: typeof TRANSCRIPT_SCHEMA_VERSION;
       sessionId: string;
       ts: string;
+      /**
+       * Phase 7.4: a zero-LLM-call tool-output prune (microcompaction).
+       * Older `function_call_output` contents were replaced in place with
+       * cleared / stored-at markers; the message + tool-call skeleton is
+       * intact.
+       */
+      kind: 'prune';
+      prunedCount: number;
+      /** chars/4 estimate of the output bytes reclaimed. */
+      reclaimedTokensEstimate: number;
+      /** Outputs offloaded to disk (vs cleared) — subset of `prunedCount`. */
+      offloadedCount: number;
+    }
+  | {
+      v: typeof TRANSCRIPT_SCHEMA_VERSION;
+      sessionId: string;
+      ts: string;
       kind: 'session_end';
       status: 'success' | 'max_turns' | 'max_budget' | 'error';
       reason?: string;
@@ -260,6 +277,25 @@ export async function logTranscriptCompact(
     summaryText: input.summaryText,
     usage: input.usage,
     costUsd: input.costUsd,
+  };
+  await appendRecord(input.logsRoot, record);
+}
+
+export async function logTranscriptPrune(
+  input: CommonInput & {
+    prunedCount: number;
+    reclaimedTokensEstimate: number;
+    offloadedCount: number;
+  },
+): Promise<void> {
+  const record: TranscriptRecord = {
+    v: TRANSCRIPT_SCHEMA_VERSION,
+    sessionId: input.sessionId,
+    ts: now(input),
+    kind: 'prune',
+    prunedCount: input.prunedCount,
+    reclaimedTokensEstimate: input.reclaimedTokensEstimate,
+    offloadedCount: input.offloadedCount,
   };
   await appendRecord(input.logsRoot, record);
 }

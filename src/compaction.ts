@@ -673,3 +673,202 @@ export function renderMessagesForSummary(messages: unknown): string {
   }
   return lines.join('\n');
 }
+
+// ——— Phase 7.4: tool-output prune tier (no-LLM microcompaction) ———
+
+/**
+ * Phase 7.4: marker that replaces a pruned tool output whose content is
+ * re-derivable (the agent can re-run the tool). Claude Code's exact wording.
+ */
+export const PRUNE_CLEARED_MARKER = '[Old tool result content cleared]';
+
+/**
+ * Phase 7.4: prefix of the marker that replaces a pruned tool output whose
+ * original bytes were offloaded to disk (recoverable — the agent can re-read
+ * the file). See {@link pruneStoredMarker}.
+ */
+export const PRUNE_STORED_MARKER_PREFIX = '[Tool result stored at: ';
+
+/** Phase 7.4: build the offloaded-output marker for a stored file path. */
+export function pruneStoredMarker(path: string): string {
+  return `${PRUNE_STORED_MARKER_PREFIX}${path}]`;
+}
+
+/**
+ * Phase 7.4: number of most-recent turns whose tool outputs are never pruned
+ * (opencode protects the last 2 turns). A turn starts at a `user`-role
+ * message.
+ */
+export const PRUNE_PROTECT_RECENT_TURNS = 2;
+
+/**
+ * Phase 7.4: most-recent tool-output budget (in tokens, chars/4 estimate)
+ * protected from pruning, accumulated newest-first (opencode: most recent
+ * 40k tokens of tool output survive).
+ */
+export const PRUNE_PROTECT_RECENT_TOKENS = 40_000;
+
+/**
+ * Phase 7.4: minimum estimated reclaim (in tokens) for a prune to commit.
+ * Pruning rewrites the prefix and therefore costs one prompt-cache miss —
+ * a prune that reclaims less than this is pure cache invalidation
+ * (opencode: >20k tokens or skip).
+ */
+export const PRUNE_MIN_RECLAIM_TOKENS = 20_000;
+
+/**
+ * Phase 7.4: tools whose outputs are never pruned by default. opencode
+ * protects `skill` (skill bodies ARE the operating instructions). Hosts can
+ * extend the list per run — e.g. add `spawn_subagent` to keep subagent
+ * results — via the agent's `pruneProtectedTools` option.
+ */
+export const DEFAULT_PRUNE_PROTECTED_TOOLS: readonly string[] = Object.freeze(['skill']);
+
+/**
+ * Phase 7.4: tools whose pruned outputs are CLEARED rather than offloaded to
+ * disk even when the session persists — their content is cheaply
+ * re-derivable by re-running the tool (Claude Code clears these first).
+ */
+export const PRUNE_REDERIVABLE_TOOLS: readonly string[] = Object.freeze([
+  'read_file',
+  'grep_files',
+  'glob',
+  'list_directory',
+  'run_command',
+]);
+
+/** One prunable `function_call_output` item identified by the planner. */
+export interface PruneCandidate {
+  /** Index into the messages array. */
+  index: number;
+  /** The output's `call_id` (used to name the offload file). */
+  callId?: string;
+  /** Tool name resolved from the matching `function_call` item. */
+  toolName?: string;
+  /** The original output string. */
+  output: string;
+  /** chars/4 token estimate of the output being removed. */
+  outputTokens: number;
+}
+
+/** Result of {@link planToolOutputPrune}. */
+export interface PrunePlan {
+  /** Items to prune, oldest first. Empty → skip (below min reclaim). */
+  candidates: PruneCandidate[];
+  /** Total estimated tokens reclaimed by the plan. */
+  reclaimedTokens: number;
+}
+
+function pruneIsUserMessage(item: unknown): boolean {
+  if (item === null || typeof item !== 'object') return false;
+  const it = item as { role?: unknown; type?: unknown };
+  return it.role === 'user' && (it.type === undefined || it.type === 'message');
+}
+
+/**
+ * Phase 7.4: plan a zero-LLM-call tool-output prune. Walks the history
+ * newest→oldest and selects older `function_call_output` items whose string
+ * content can be replaced in place with a marker, protecting:
+ *
+ * - everything inside the most recent `protectRecentTurns` turns (turn =
+ *   starts at a `user`-role message; when no user messages exist the last
+ *   item alone is protected),
+ * - the most recent `protectRecentTokens` worth of tool output (newest
+ *   first) outside that window,
+ * - outputs of `protectedTools` (resolved from the paired `function_call`'s
+ *   `name` via `call_id`; unresolvable names are treated as protected —
+ *   fail-safe),
+ * - already-pruned outputs (cleared / stored-at markers), and
+ * - non-string outputs (no in-place text replacement is meaningful).
+ *
+ * The plan commits only when the estimated reclaim exceeds
+ * `minReclaimTokens` — otherwise an empty plan is returned and the caller
+ * skips (a small prune is pure prompt-cache invalidation). The message /
+ * tool-call **skeleton stays intact**: only `output` strings are replaced,
+ * so the model still sees that the calls happened.
+ */
+export function planToolOutputPrune(
+  messages: unknown,
+  opts: {
+    protectRecentTurns?: number;
+    protectRecentTokens?: number;
+    protectedTools?: readonly string[];
+    minReclaimTokens?: number;
+  } = {},
+): PrunePlan {
+  const empty: PrunePlan = { candidates: [], reclaimedTokens: 0 };
+  if (!Array.isArray(messages) || messages.length === 0) return empty;
+
+  const protectTurns = opts.protectRecentTurns ?? PRUNE_PROTECT_RECENT_TURNS;
+  const protectTokens = opts.protectRecentTokens ?? PRUNE_PROTECT_RECENT_TOKENS;
+  const protectedTools = new Set(opts.protectedTools ?? DEFAULT_PRUNE_PROTECTED_TOOLS);
+  const minReclaim = opts.minReclaimTokens ?? PRUNE_MIN_RECLAIM_TOKENS;
+
+  // call_id → tool name, from the function_call items.
+  const namesByCallId = new Map<string, string>();
+  for (const item of messages) {
+    if (item === null || typeof item !== 'object') continue;
+    const it = item as { type?: unknown; call_id?: unknown; name?: unknown };
+    if (
+      it.type === 'function_call' &&
+      typeof it.call_id === 'string' &&
+      typeof it.name === 'string'
+    ) {
+      namesByCallId.set(it.call_id, it.name);
+    }
+  }
+
+  // Start of the protected turn window: the protectTurns-th user message
+  // from the end. No user messages → protect only the very last item.
+  let protectedFrom = messages.length - 1;
+  let turnsSeen = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (pruneIsUserMessage(messages[i])) {
+      turnsSeen += 1;
+      protectedFrom = i;
+      if (turnsSeen >= protectTurns) break;
+    }
+  }
+  if (turnsSeen === 0) protectedFrom = messages.length - 1;
+
+  const candidates: PruneCandidate[] = [];
+  let reclaimed = 0;
+  let recentOutputTokens = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const item = messages[i];
+    if (item === null || typeof item !== 'object') continue;
+    const it = item as { type?: unknown; call_id?: unknown; output?: unknown };
+    if (it.type !== 'function_call_output') continue;
+    if (typeof it.output !== 'string') continue;
+    if (it.output === PRUNE_CLEARED_MARKER || it.output.startsWith(PRUNE_STORED_MARKER_PREFIX)) {
+      continue;
+    }
+    const outputTokens = Math.ceil(it.output.length / CHARS_PER_TOKEN);
+    // The most recent `protectTokens` of tool output (newest first across
+    // the WHOLE history — outputs inside the protected turn window consume
+    // this budget too) survives.
+    if (recentOutputTokens < protectTokens) {
+      recentOutputTokens += outputTokens;
+      continue;
+    }
+    // Everything inside the protected turn window survives regardless.
+    if (i >= protectedFrom) continue;
+    const callId = typeof it.call_id === 'string' ? it.call_id : undefined;
+    const toolName = callId !== undefined ? namesByCallId.get(callId) : undefined;
+    // Unresolvable tool names are protected — never blindly destroy output
+    // we cannot classify.
+    if (toolName === undefined || protectedTools.has(toolName)) continue;
+    candidates.push({
+      index: i,
+      ...(callId !== undefined && { callId }),
+      toolName,
+      output: it.output,
+      outputTokens,
+    });
+    reclaimed += outputTokens;
+  }
+
+  if (reclaimed < minReclaim) return empty;
+  candidates.reverse(); // oldest first, for stable offload naming/logging
+  return { candidates, reclaimedTokens: reclaimed };
+}

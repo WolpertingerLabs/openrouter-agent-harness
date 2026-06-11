@@ -113,11 +113,18 @@ export {
   DEFAULT_KEEP_BUDGET_MAX_TOKENS,
   DEFAULT_KEEP_RECENT_TURNS,
   DEFAULT_OUTPUT_RESERVE_TOKENS,
+  DEFAULT_PRUNE_PROTECTED_TOOLS,
   DEFAULT_SAFETY_BUFFER_TOKENS,
   DEFAULT_THRESHOLD_RATIO,
   KEEP_BUDGET_WINDOW_FRACTION,
   MAX_SUMMARIZER_TRIM_RETRIES,
   MODEL_CONTEXT_WINDOWS,
+  PRUNE_CLEARED_MARKER,
+  PRUNE_MIN_RECLAIM_TOKENS,
+  PRUNE_PROTECT_RECENT_TOKENS,
+  PRUNE_PROTECT_RECENT_TURNS,
+  PRUNE_REDERIVABLE_TOOLS,
+  PRUNE_STORED_MARKER_PREFIX,
   SUMMARIZER_INPUT_RESERVE_TOKENS,
   SUMMARY_TOOL_OUTPUT_MAX_CHARS,
   estimateInstructionsAndToolsTokens,
@@ -125,6 +132,8 @@ export {
   getModelContextWindow,
   isContextOverflowError,
   partitionMessages,
+  planToolOutputPrune,
+  pruneStoredMarker,
   renderMessagesForSummary,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
@@ -132,7 +141,7 @@ export {
   resolveSummarizerInputBudgetChars,
   serializeMessagesForEstimate,
 } from './compaction.js';
-export type { PartitionMessagesOptions } from './compaction.js';
+export type { PartitionMessagesOptions, PruneCandidate, PrunePlan } from './compaction.js';
 export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 export type { StallMonitor } from './stall.js';
 export {
@@ -182,6 +191,7 @@ export {
   logTranscriptToolResult,
   logTranscriptServerTool,
   logTranscriptCompact,
+  logTranscriptPrune,
   logTranscriptSessionEnd,
   readTranscript,
 } from './logging/transcript.js';

@@ -51,12 +51,17 @@ export default defineConfig({
         // fails while compaction is already failing must not mask the
         // original error). Functions stay at 98.6.
         //
-        // Phase 7 stack merge (7.1+7.2+7.3 together): each card individually
-        // ratcheted branches to 96.2 (suite ~96.5 in isolation). Stacked, the
-        // union's branch ratio settles at 96.17 — the documented defensive
-        // branches above (cache guard, failure-counter save, render edge
-        // shapes) sum across cards. Threshold relaxed to 96.1 to reflect the
-        // true merged baseline; statements/functions/lines unchanged.
+        // Phase 7.4 (tool-output prune tier): the prune planner in
+        // compaction.ts and the agent prune path are fully covered, including
+        // the offload-write-failure fallback. Functions stay at 98.6.
+        //
+        // Phase 7 stack merge (7.1+7.2+7.3+7.4 together): each card
+        // individually ratcheted branches to 96.2 (suite ~96.5 in isolation).
+        // Stacked, the union's branch ratio settles at ~96.17 — the documented
+        // defensive branches above (cache guard, failure-counter save, render
+        // edge shapes, prune offload fallback) sum across cards. Threshold
+        // relaxed to 96.1 to reflect the true merged baseline;
+        // statements/functions/lines unchanged.
         statements: 98.9,
         branches: 96.1,
         functions: 98.6,

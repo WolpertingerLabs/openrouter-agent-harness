@@ -106,6 +106,18 @@ export async function logTranscriptCompact(input) {
     };
     await appendRecord(input.logsRoot, record);
 }
+export async function logTranscriptPrune(input) {
+    const record = {
+        v: TRANSCRIPT_SCHEMA_VERSION,
+        sessionId: input.sessionId,
+        ts: now(input),
+        kind: 'prune',
+        prunedCount: input.prunedCount,
+        reclaimedTokensEstimate: input.reclaimedTokensEstimate,
+        offloadedCount: input.offloadedCount,
+    };
+    await appendRecord(input.logsRoot, record);
+}
 export async function logTranscriptSessionEnd(input) {
     const record = {
         v: TRANSCRIPT_SCHEMA_VERSION,
