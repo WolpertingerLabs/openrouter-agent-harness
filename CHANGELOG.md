@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   This release adds:
   - A new `AgentCoreEvent` variant `{ type: 'server_tool', toolType, callId?,
-    status, input?, output, isError }`, emitted once per `openrouter:*` response
+status, input?, output, isError }`, emitted once per `openrouter:*` response
     output item. `input` carries the recoverable model input where one exists
     (`web_search` → `{ query }`); `output` is the item payload with the
     envelope keys (`type`/`id`/`status`) stripped; `isError` is derived from a
