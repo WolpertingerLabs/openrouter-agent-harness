@@ -224,4 +224,67 @@ describe('aggregateMessages', () => {
     const msgs = await collect(aggregateMessages(fromArray(events)));
     expect(msgs).toEqual([{ type: 'result', status: 'error' }]);
   });
+
+  it('projects a server_tool event onto a tool_use + tool_result pair', async () => {
+    const events: AgentCoreEvent[] = [
+      { type: 'session_started', sessionId: 's' },
+      { type: 'turn_start', turnNumber: 0 },
+      {
+        type: 'server_tool',
+        toolType: 'openrouter:web_search',
+        callId: 'st_ws',
+        status: 'completed',
+        input: { query: 'cats' },
+        output: { action: { query: 'cats' } },
+        isError: false,
+      },
+      { type: 'turn_end', turnNumber: 0, usage: null, costUsd: 0 },
+      { type: 'stream_complete', status: 'success' },
+    ];
+    const msgs = await collect(aggregateMessages(fromArray(events)));
+    const assistant = msgs.find((m) => m.type === 'assistant');
+    expect(assistant).toEqual({
+      type: 'assistant',
+      content: [
+        { type: 'tool_use', id: 'st_ws', name: 'openrouter:web_search', input: { query: 'cats' } },
+      ],
+    });
+    const user = msgs.find((m) => m.type === 'user');
+    expect(user).toEqual({
+      type: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          toolUseId: 'st_ws',
+          output: JSON.stringify({ action: { query: 'cats' } }),
+          isError: false,
+        },
+      ],
+    });
+  });
+
+  it('falls back to toolType as the correlation id when a server_tool omits callId', async () => {
+    const events: AgentCoreEvent[] = [
+      { type: 'session_started', sessionId: 's' },
+      { type: 'turn_start', turnNumber: 0 },
+      {
+        type: 'server_tool',
+        toolType: 'openrouter:datetime',
+        status: 'completed',
+        output: { datetime: '2026-06-11T00:00:00Z' },
+        isError: false,
+      },
+      { type: 'turn_end', turnNumber: 0, usage: null, costUsd: 0 },
+      { type: 'stream_complete', status: 'success' },
+    ];
+    const msgs = await collect(aggregateMessages(fromArray(events)));
+    const assistant = msgs.find((m) => m.type === 'assistant') as {
+      content: Array<{ type: string; id: string }>;
+    };
+    expect(assistant.content[0].id).toBe('openrouter:datetime');
+    const user = msgs.find((m) => m.type === 'user') as {
+      content: Array<{ toolUseId: string }>;
+    };
+    expect(user.content[0].toolUseId).toBe('openrouter:datetime');
+  });
 });

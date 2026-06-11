@@ -74,6 +74,24 @@ export async function logTranscriptToolResult(input) {
     };
     await appendRecord(input.logsRoot, record);
 }
+export async function logTranscriptServerTool(input) {
+    const record = {
+        v: TRANSCRIPT_SCHEMA_VERSION,
+        sessionId: input.sessionId,
+        ts: now(input),
+        kind: 'server_tool',
+        toolType: input.toolType,
+        // `JSON.stringify` drops undefined-valued keys, so set optionals
+        // unconditionally — the on-disk record stays compact (matches the
+        // convention in logTranscriptSessionStart / logTranscriptAssistant).
+        callId: input.callId,
+        status: input.status,
+        input: input.input,
+        output: input.output,
+        isError: input.isError,
+    };
+    await appendRecord(input.logsRoot, record);
+}
 export async function logTranscriptCompact(input) {
     const record = {
         v: TRANSCRIPT_SCHEMA_VERSION,

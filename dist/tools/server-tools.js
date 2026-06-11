@@ -4,6 +4,11 @@ export const SERVER_TOOLS = [
     { type: 'openrouter:web_search' },
     { type: 'openrouter:web_fetch' },
 ];
+// Re-export the pure server-tool *output item* helpers from their SDK-free
+// home so existing importers of `server-tools.js` keep working. The agent loop
+// imports them directly from `./server-tool-items.js` to stay clear of the
+// `server-tools.js` mocks many tests install to stub `createServerToolsHooks`.
+export { isServerToolOutputItem, normalizeServerToolItem, } from './server-tool-items.js';
 /** Cap on the upstream `raw` error excerpt appended to HTTP error reasons. */
 const MAX_RAW_METADATA_CHARS = 500;
 /**
