@@ -107,10 +107,13 @@ export {
   COMPACTION_PROMPT,
   CHARS_PER_TOKEN,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_KEEP_BUDGET_MIN_TOKENS,
+  DEFAULT_KEEP_BUDGET_MAX_TOKENS,
   DEFAULT_KEEP_RECENT_TURNS,
   DEFAULT_OUTPUT_RESERVE_TOKENS,
   DEFAULT_SAFETY_BUFFER_TOKENS,
   DEFAULT_THRESHOLD_RATIO,
+  KEEP_BUDGET_WINDOW_FRACTION,
   MODEL_CONTEXT_WINDOWS,
   estimateInstructionsAndToolsTokens,
   estimateMessagesCharLength,
@@ -118,8 +121,10 @@ export {
   partitionMessages,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
+  resolveKeepBudgetTokens,
   serializeMessagesForEstimate,
 } from './compaction.js';
+export type { PartitionMessagesOptions } from './compaction.js';
 export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 export type { StallMonitor } from './stall.js';
 export {

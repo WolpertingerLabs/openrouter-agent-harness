@@ -1,7 +1,7 @@
 import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isToolCallOutputEvent, isClientTool, } from '@openrouter/agent';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_KEEP_RECENT_TURNS, estimateInstructionsAndToolsTokens, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+import { COMPACTION_PROMPT, CHARS_PER_TOKEN, estimateInstructionsAndToolsTokens, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, resolveKeepBudgetTokens, serializeMessagesForEstimate, } from './compaction.js';
 import { ModelContextLengthCache } from './openrouter-api.js';
 import { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 import { allTools } from './tools/index.js';
@@ -172,7 +172,7 @@ function resolveOptions(opts) {
         ...(opts.safetyBufferTokens !== undefined && {
             safetyBufferTokens: opts.safetyBufferTokens,
         }),
-        keepRecentTurns: opts.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS,
+        ...(opts.keepRecentTurns !== undefined && { keepRecentTurns: opts.keepRecentTurns }),
         autoCompact: opts.autoCompact ?? true,
         ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
         autoDiscoverMcp: opts.autoDiscoverMcp ?? false,
@@ -470,13 +470,25 @@ export class OpenRouterAgentRun {
         const rawMessages = state.messages;
         if (!Array.isArray(rawMessages) || rawMessages.length === 0)
             return;
-        const { summarize, keep } = partitionMessages(rawMessages, this.opts.keepRecentTurns);
+        // Phase 7.2: explicit keepRecentTurns keeps the last N TURNS verbatim;
+        // when omitted, the keep tail is token-budgeted against the model's
+        // context window (25% clamped 2k–8k). Both modes snap the cut to a turn
+        // boundary / valid tail start — see partitionMessages.
+        const { summarize, keep } = partitionMessages(rawMessages, this.opts.keepRecentTurns !== undefined
+            ? { keepRecentTurns: this.opts.keepRecentTurns }
+            : {
+                contextWindowTokens: getModelContextWindow(this.opts.model, this.opts.modelContextWindows),
+            });
         if (summarize.length === 0)
             return;
         await this.safeFireHook('PreCompact', {
             event: 'PreCompact',
             messages: summarize,
-            keepRecentTurns: this.opts.keepRecentTurns,
+            ...(this.opts.keepRecentTurns !== undefined
+                ? { keepRecentTurns: this.opts.keepRecentTurns }
+                : {
+                    keepBudgetTokens: resolveKeepBudgetTokens(getModelContextWindow(this.opts.model, this.opts.modelContextWindows)),
+                }),
             reason,
         });
         const client = this.createOpenRouterClient();

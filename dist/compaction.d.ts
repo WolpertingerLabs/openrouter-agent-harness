@@ -148,21 +148,89 @@ export declare function serializeMessagesForEstimate(messages: unknown): string;
  */
 export declare function estimateMessagesCharLength(messages: unknown): number;
 /**
- * Split a message array into a `summarize` prefix and a `keep` tail. The tail
- * length is `min(messages.length, keepRecentTurns)`. When the array is
- * shorter than the keep window, the prefix is empty and no compaction is
- * needed.
- *
- * Note: `keepRecentTurns` is interpreted at **message** granularity, not
- * strict conversational-turn granularity. The SDK's `InputsUnion` mixes user
- * messages, assistant output items, reasoning items, tool calls, and tool
- * results — a robust turn-boundary detector is deferred to a future card
- * (the v1 heuristic keeps the implementation predictable and dependency-free).
+ * Phase 7.2: lower clamp (in **tokens**) for the default token-budgeted keep
+ * tail. A tail below ~2k tokens carries too little working context for the
+ * model to resume coherently (opencode's exact lower bound).
  */
-export declare function partitionMessages<T>(messages: readonly T[], keepRecentTurns: number): {
+export declare const DEFAULT_KEEP_BUDGET_MIN_TOKENS = 2000;
+/**
+ * Phase 7.2: upper clamp (in **tokens**) for the default token-budgeted keep
+ * tail. Keeping more than ~8k tokens verbatim defeats the point of compacting
+ * on the large windows where 25% of usable space would otherwise be 50k+
+ * (opencode's exact upper bound).
+ */
+export declare const DEFAULT_KEEP_BUDGET_MAX_TOKENS = 8000;
+/**
+ * Phase 7.2: fraction of the usable context window targeted by the default
+ * keep budget before clamping (opencode: 25% of usable).
+ */
+export declare const KEEP_BUDGET_WINDOW_FRACTION = 0.25;
+/**
+ * Phase 7.2: resolve the default keep-tail budget (in **tokens**):
+ * `clamp(floor(window * 0.25), 2k, 8k)`. With no window supplied the
+ * {@link DEFAULT_CONTEXT_WINDOW_TOKENS} fallback applies (→ 8k on 128k).
+ */
+export declare function resolveKeepBudgetTokens(contextWindowTokens?: number): number;
+/** Options accepted by {@link partitionMessages} (Phase 7.2). */
+export interface PartitionMessagesOptions {
+    /**
+     * Keep the last N **turns** verbatim (a turn starts at a `user`-role
+     * message). Overrides the token budget when set. `0` keeps nothing.
+     * Histories with no user messages fall back to message granularity
+     * (the v1 shape) snapped to a valid tail start.
+     */
+    keepRecentTurns?: number;
+    /**
+     * Explicit token budget for the keep tail. Defaults to
+     * {@link resolveKeepBudgetTokens}(contextWindowTokens).
+     */
+    keepBudgetTokens?: number;
+    /**
+     * Context-window size (tokens) used to derive the default budget. Ignored
+     * when `keepBudgetTokens` or `keepRecentTurns` is set.
+     */
+    contextWindowTokens?: number;
+}
+/**
+ * Split a message array into a `summarize` prefix and a `keep` tail.
+ *
+ * Phase 7.2: the keep tail is **turn-boundary-safe** — it starts at a
+ * `user`-role message (a turn boundary), so the rebuilt history never opens
+ * with an orphaned `function_call_output` (a hard 400 on the Responses API)
+ * or a reasoning item stranded from the item it anchors. Only the keep tail
+ * re-enters the conversation as live API items; the summarize prefix is
+ * JSON-stringified into the summarizer's input, where item validity does not
+ * apply.
+ *
+ * Two keep modes:
+ *
+ * - **Token budget (default)** — whole turns are kept newest-first while
+ *   their combined chars/{@link CHARS_PER_TOKEN} estimate fits
+ *   `keepBudgetTokens` (default {@link resolveKeepBudgetTokens}: 25% of the
+ *   window clamped 2k–8k). When even the most recent turn alone exceeds the
+ *   budget (a tool-heavy oversized turn), an item-granular splitTurn
+ *   fallback keeps the most recent items that fit, advanced to a valid tail
+ *   start — never an orphaned fragment.
+ * - **`keepRecentTurns` override** — keeps the last N turns verbatim at TRUE
+ *   turn granularity (v1 counted messages; a bare number passed for `opts`
+ *   selects this mode for back-compat). Fewer than N turns → nothing is
+ *   summarized. `0` → everything is summarized.
+ *
+ * Histories containing no user messages at all (no turn boundaries) fall
+ * back to item granularity: the v1 trailing-N slice under
+ * `keepRecentTurns`, or the splitTurn budget walk otherwise — in both cases
+ * snapped forward to a valid tail start.
+ */
+export declare function partitionMessages<T>(messages: readonly T[], opts: number | PartitionMessagesOptions): {
     summarize: readonly T[];
     keep: readonly T[];
 };
-/** Default number of trailing messages preserved verbatim during compaction. */
+/**
+ * Legacy v1 default for the trailing keep window. Phase 7.2: no longer
+ * applied implicitly — when `keepRecentTurns` is not supplied, the partition
+ * uses the token-budgeted keep tail ({@link resolveKeepBudgetTokens})
+ * instead. Exported for back-compat with consumers that referenced the v1
+ * default.
+ */
 export declare const DEFAULT_KEEP_RECENT_TURNS = 5;
 //# sourceMappingURL=compaction.d.ts.map

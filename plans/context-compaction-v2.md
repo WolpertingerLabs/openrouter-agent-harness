@@ -76,7 +76,7 @@ apply (fast-track merge, hard invariants, coverage ratchet — see
 | Card    | Title                                                              | Est.   | Depends on |
 | ------- | ------------------------------------------------------------------ | ------ | ---------- |
 | ~~7.1~~ | ~~Real-token trigger: mid-run check + dynamic context windows~~ ✅ | ~~8h~~ | —          |
-| 7.2     | Turn-boundary-safe partition + token-budgeted keep tail            | 5h     | —          |
+| ~~7.2~~ | ~~Turn-boundary-safe partition + token-budgeted keep tail~~ ✅     | ~~5h~~ | —          |
 | 7.3     | Summarizer resilience: trim-retry, inflation check, breaker        | 6h     | 7.1 (soft) |
 | 7.4     | Tool-output prune tier (no-LLM microcompaction)                    | 6h     | —          |
 | 7.5     | Summary quality & ergonomics                                       | 8h     | —          |

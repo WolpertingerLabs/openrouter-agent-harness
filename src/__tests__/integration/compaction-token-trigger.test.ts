@@ -173,11 +173,16 @@ describe('integration: Phase 7.1 real-token mid-run compaction', () => {
       'auto',
     );
 
-    // State was rewritten with the summary + last 2 messages.
+    // State was rewritten with the summary + last 2 TURNS. Phase 7.2 turn
+    // granularity: keepRecentTurns:2 over the [u,a]×3 seed keeps the final
+    // two turns ([c,d,e,f] = 4 messages), so the rebuilt history is
+    // [summary, ...4] = 5 messages and the kept tail starts at a user-role
+    // turn boundary (never an orphaned function_call_output / reasoning item).
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
     expect(persisted.messages[0].role).toBe('developer');
     expect(persisted.messages[0].content).toContain('MID-RUN-SUMMARY');
-    expect(persisted.messages.length).toBe(3);
+    expect(persisted.messages.length).toBe(5);
+    expect(persisted.messages[1].role).toBe('user');
   });
 
   it('does NOT compact mid-run when real inputTokens stays below the threshold', async () => {
