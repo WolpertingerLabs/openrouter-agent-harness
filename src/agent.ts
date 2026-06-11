@@ -15,12 +15,16 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
   COMPACTION_PROMPT,
+  CHARS_PER_TOKEN,
   DEFAULT_KEEP_RECENT_TURNS,
+  estimateInstructionsAndToolsTokens,
+  getModelContextWindow,
   partitionMessages,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
   serializeMessagesForEstimate,
 } from './compaction.js';
+import { ModelContextLengthCache } from './openrouter-api.js';
 import { StreamStallError, createStallMonitor, monitorStream, type StallMonitor } from './stall.js';
 import { allTools } from './tools/index.js';
 import {
@@ -97,6 +101,15 @@ import {
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
 const DEFAULT_MAX_TURNS = 25;
 const DEFAULT_MAX_BUDGET_USD = 1.0;
+
+/**
+ * Phase 7.1: process-wide cache for the OR `/api/v1/models` context-window
+ * table. Shared across runs so a callboard cron firing one short session per
+ * minute resolves windows from memory after the first fetch. Failure-tolerant
+ * (network errors return `null` → static-table fallback), so compaction never
+ * gains a hard network dependency. Exported for test reset.
+ */
+export const MODEL_CONTEXT_LENGTH_CACHE = new ModelContextLengthCache();
 const DEFAULT_APP_TITLE = 'openrouter-agent-harness';
 const ABORT_REASON = 'aborted';
 /**
@@ -694,6 +707,35 @@ export interface OpenRouterAgentRunOptions {
    */
   tokenCounter?: (serializedMessages: string) => number;
   /**
+   * Phase 7.1: explicit context-window size (in **tokens**) for the active
+   * model. Highest-precedence window source for the Phase 7.1 mid-run
+   * trigger: explicit `contextWindowTokens` → live OR `/api/v1/models`
+   * `context_length` lookup → {@link modelContextWindows} override →
+   * static {@link MODEL_CONTEXT_WINDOWS} table → 128k fallback. The live
+   * lookup is lazy, TTL-cached, and failure-tolerant (a network error falls
+   * back to the static table — compaction never gains a hard network
+   * dependency). Inherited by spawned subagents.
+   */
+  contextWindowTokens?: number;
+  /**
+   * Phase 7.1: output reserve (in **tokens**) subtracted from the context
+   * window when deriving the mid-run token threshold
+   * (`contextWindow − outputReserveTokens − safetyBufferTokens`,
+   * absolute-buffer shape à la Claude Code / opencode). This is the room
+   * reserved for the model's response — and, critically, for the summarizer
+   * call itself. Defaults to {@link DEFAULT_OUTPUT_RESERVE_TOKENS} (≈20k).
+   * Ignored when an explicit `compactionThreshold` is supplied (it wins
+   * outright). Inherited by spawned subagents.
+   */
+  outputReserveTokens?: number;
+  /**
+   * Phase 7.1: extra safety buffer (in **tokens**) on top of
+   * {@link outputReserveTokens}, covering measurement slop. Defaults to
+   * {@link DEFAULT_SAFETY_BUFFER_TOKENS} (≈8k). Ignored when an explicit
+   * `compactionThreshold` is supplied. Inherited by spawned subagents.
+   */
+  safetyBufferTokens?: number;
+  /**
    * Phase 5.1: number of trailing messages (NOT strict turns — see
    * {@link partitionMessages} JSDoc for the granularity note) preserved
    * verbatim during compaction. Everything older is condensed into a single
@@ -949,6 +991,12 @@ interface ResolvedOptions {
    * check. Inherited by spawned subagents.
    */
   tokenCounter?: (serializedMessages: string) => number;
+  /** Phase 7.1: explicit context-window override (tokens). `undefined` → live lookup / static table. */
+  contextWindowTokens?: number;
+  /** Phase 7.1: output reserve (tokens) for the mid-run token threshold. */
+  outputReserveTokens?: number;
+  /** Phase 7.1: extra safety buffer (tokens) for the mid-run token threshold. */
+  safetyBufferTokens?: number;
   /** Phase 5.1: resolved trailing-message count to preserve verbatim. */
   keepRecentTurns: number;
   /** Phase 5.1: resolved auto-trigger toggle. */
@@ -1062,6 +1110,15 @@ function resolveOptions(opts: OpenRouterAgentRunOptions): ResolvedOptions {
       modelContextWindows: opts.modelContextWindows,
     }),
     ...(opts.tokenCounter !== undefined && { tokenCounter: opts.tokenCounter }),
+    ...(opts.contextWindowTokens !== undefined && {
+      contextWindowTokens: opts.contextWindowTokens,
+    }),
+    ...(opts.outputReserveTokens !== undefined && {
+      outputReserveTokens: opts.outputReserveTokens,
+    }),
+    ...(opts.safetyBufferTokens !== undefined && {
+      safetyBufferTokens: opts.safetyBufferTokens,
+    }),
     keepRecentTurns: opts.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS,
     autoCompact: opts.autoCompact ?? true,
     ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
@@ -1894,6 +1951,15 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           }),
           ...(this.opts.modelParams !== undefined && { modelParams: this.opts.modelParams }),
           ...(this.opts.tokenCounter !== undefined && { tokenCounter: this.opts.tokenCounter }),
+          ...(this.opts.contextWindowTokens !== undefined && {
+            contextWindowTokens: this.opts.contextWindowTokens,
+          }),
+          ...(this.opts.outputReserveTokens !== undefined && {
+            outputReserveTokens: this.opts.outputReserveTokens,
+          }),
+          ...(this.opts.safetyBufferTokens !== undefined && {
+            safetyBufferTokens: this.opts.safetyBufferTokens,
+          }),
           appTitle,
           logsRoot,
           persistSession,
