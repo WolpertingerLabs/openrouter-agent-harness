@@ -44,28 +44,58 @@ export declare const DEFAULT_CONTEXT_WINDOW_TOKENS = 128000;
  */
 export declare const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>>;
 /**
- * Resolve the context-window size (in tokens) for a given model id. Tries the
- * id verbatim, then with a leading `~` (OR alias marker) stripped. Falls back
- * to {@link DEFAULT_CONTEXT_WINDOW_TOKENS} for unknown models.
+ * Resolve the context-window size (in tokens) for a given model id. Lookup
+ * order: caller-supplied `overrides` exact match → `overrides` with a
+ * leading `~` (OR alias marker) stripped → static
+ * {@link MODEL_CONTEXT_WINDOWS} exact match → static table alias → the
+ * {@link DEFAULT_CONTEXT_WINDOW_TOKENS} fallback. Overrides let a host
+ * teach the harness about models the shipped table doesn't know (or correct
+ * stale entries) per run — see
+ * {@link import('./agent.js').OpenRouterAgentRunOptions.modelContextWindows}.
  *
  * Exported so consumers can pre-compute a sensible `compactionThreshold` for
  * a model whose default they want to override, without re-deriving the table.
  */
-export declare function getModelContextWindow(model: string): number;
+export declare function getModelContextWindow(model: string, overrides?: Readonly<Record<string, number>>): number;
 /**
  * Resolve the threshold (in **characters**, not tokens) that triggers
- * auto-compaction. Caller-supplied `configured` wins outright — it is
- * interpreted as a raw character count so consumers can opt out of the
- * char-per-token translation entirely. When omitted, the threshold is
- * `getModelContextWindow(model) * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO`.
+ * auto-compaction under the default chars/4 heuristic. Caller-supplied
+ * `configured` wins outright — it is interpreted as a raw character count so
+ * consumers can opt out of the char-per-token translation entirely. When
+ * omitted, the threshold is `getModelContextWindow(model, overrides) *
+ * CHARS_PER_TOKEN * DEFAULT_THRESHOLD_RATIO`.
  */
-export declare function resolveCompactionThresholdChars(configured: number | undefined, model: string): number;
+export declare function resolveCompactionThresholdChars(configured: number | undefined, model: string, overrides?: Readonly<Record<string, number>>): number;
 /**
- * Char-length heuristic for the SDK's `ConversationState.messages` field
- * (`InputsUnion`). Accepts either the raw string form or the array form;
- * arrays are JSON-serialized per-item (cheap enough at compaction scale —
- * runs once per turn boundary at most). Non-message inputs (`null`,
- * `undefined`, anything else) return `0`.
+ * Resolve the threshold (in **tokens**) that triggers auto-compaction when a
+ * real `tokenCounter` is wired (see
+ * {@link import('./agent.js').OpenRouterAgentRunOptions.tokenCounter}).
+ * Caller-supplied `configured` wins outright — under token accounting the
+ * run's `compactionThreshold` is REINTERPRETED as a token count (the
+ * char-count reading only applies to the heuristic path). When omitted, the
+ * threshold is `floor(getModelContextWindow(model, overrides) *
+ * DEFAULT_THRESHOLD_RATIO)` — no chars-per-token translation, because the
+ * comparison side is already a real token count.
+ */
+export declare function resolveCompactionThresholdTokens(configured: number | undefined, model: string, overrides?: Readonly<Record<string, number>>): number;
+/**
+ * Canonical serialization of the SDK's `ConversationState.messages` field
+ * (`InputsUnion`) for size estimation. The raw string form passes through
+ * verbatim; the array form concatenates each item's `JSON.stringify` (cheap
+ * enough at compaction scale — runs once per run boundary at most);
+ * non-message inputs (`null`, `undefined`, anything else) serialize to `''`.
+ *
+ * Shared by BOTH accounting paths so they measure exactly the same bytes:
+ * {@link estimateMessagesCharLength} takes this string's length (the chars/4
+ * heuristic), and the agent's `tokenCounter` hook receives this string
+ * verbatim for real token counting.
+ */
+export declare function serializeMessagesForEstimate(messages: unknown): string;
+/**
+ * Char-length heuristic for the SDK's `ConversationState.messages` field —
+ * the length of {@link serializeMessagesForEstimate}'s output. Kept as a
+ * named export (rather than inlining `.length` at call sites) for back-compat
+ * and so the heuristic reads symmetrically with the tokenizer path.
  */
 export declare function estimateMessagesCharLength(messages: unknown): number;
 /**

@@ -1,7 +1,8 @@
 import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isToolCallOutputEvent, isClientTool, } from '@openrouter/agent';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { COMPACTION_PROMPT, DEFAULT_KEEP_RECENT_TURNS, estimateMessagesCharLength, partitionMessages, resolveCompactionThresholdChars, } from './compaction.js';
+import { COMPACTION_PROMPT, DEFAULT_KEEP_RECENT_TURNS, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+import { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 import { allTools } from './tools/index.js';
 import { createSkillLoader, } from './skills/index.js';
 import { DEFAULT_SKILL_DESCRIPTION_BUDGET, buildSkillListing, } from './tools/skill.js';
@@ -16,7 +17,7 @@ import { composeInstructions } from './context-discovery.js';
 import { aggregateMessages } from './messages.js';
 import { forkSession } from './session-fork.js';
 import { DEFAULT_MAX_SUBAGENT_DEPTH, DEFAULT_MAX_PARALLEL_SUBAGENTS, } from './tools/spawn-subagent.js';
-import { McpBridge } from './mcp/bridge.js';
+import { McpBridge, MCP_TOOL_NAME_SEPARATOR } from './mcp/bridge.js';
 import { loadMcpConfig } from './mcp/config.js';
 import { StreamingInputSource, commitPartialResponse, isAsyncIterable, setInterruptedFlag, userInputToCallModelItem, } from './streaming-input.js';
 const DEFAULT_MODEL = '~anthropic/claude-sonnet-latest';
@@ -37,6 +38,23 @@ const DEFAULT_MAX_TRANSIENT_RETRIES = 2;
  * retries: attempt N sleeps `base * 2^N` ms (500ms, 1s, 2s, …).
  */
 const DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS = 500;
+/**
+ * Default hung-stream threshold (see
+ * {@link OpenRouterAgentRunOptions.streamStallTimeoutMs}). Two minutes of
+ * total SSE silence with no client tool in flight comfortably exceeds any
+ * legitimate inter-token gap observed in production (provider thinking
+ * pauses run seconds, not minutes) while still bounding the worst-case
+ * hang of a dead upstream connection.
+ */
+const DEFAULT_STREAM_STALL_TIMEOUT_MS = 120_000;
+/**
+ * Default per-tool execute deadline (see
+ * {@link OpenRouterAgentRunOptions.toolTimeoutMs}). One minute covers every
+ * non-exempt built-in (file I/O, grep/glob, notebook edits) with a wide
+ * margin; the long-running tools — `bash` (own `timeout_ms`),
+ * `spawn_subagent`/`spawn_subagents`, MCP-bridged tools — are exempt.
+ */
+const DEFAULT_TOOL_TIMEOUT_MS = 60_000;
 /**
  * Default system instructions for the built-in code-editing agent. Exported so
  * library consumers can extend, prefix, or replace the string without
@@ -98,6 +116,8 @@ function resolveOptions(opts) {
         maxBudgetUsd: opts.maxBudgetUsd ?? DEFAULT_MAX_BUDGET_USD,
         maxTransientRetries: opts.maxTransientRetries ?? DEFAULT_MAX_TRANSIENT_RETRIES,
         transientRetryBaseDelayMs: opts.transientRetryBaseDelayMs ?? DEFAULT_TRANSIENT_RETRY_BASE_DELAY_MS,
+        streamStallTimeoutMs: opts.streamStallTimeoutMs ?? DEFAULT_STREAM_STALL_TIMEOUT_MS,
+        toolTimeoutMs: opts.toolTimeoutMs ?? DEFAULT_TOOL_TIMEOUT_MS,
         tools: opts.tools ?? [],
         appTitle: opts.appTitle ?? DEFAULT_APP_TITLE,
         logsRoot: opts.logsRoot ?? join(cwd, 'logs'),
@@ -125,6 +145,10 @@ function resolveOptions(opts) {
         ...(opts.compactionThreshold !== undefined && {
             compactionThreshold: opts.compactionThreshold,
         }),
+        ...(opts.modelContextWindows !== undefined && {
+            modelContextWindows: opts.modelContextWindows,
+        }),
+        ...(opts.tokenCounter !== undefined && { tokenCounter: opts.tokenCounter }),
         keepRecentTurns: opts.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS,
         autoCompact: opts.autoCompact ?? true,
         ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
@@ -468,6 +492,42 @@ export class OpenRouterAgentRun {
                 summaryText,
             });
         }
+    }
+    /**
+     * Decide whether the persisted message history has crossed the
+     * auto-compaction threshold. Two accounting modes share one serialization
+     * (see {@link serializeMessagesForEstimate} — both paths measure exactly
+     * the same string):
+     *
+     * - **Token mode** — when {@link OpenRouterAgentRunOptions.tokenCounter}
+     *   is set, the counter's output is compared against a TOKEN threshold:
+     *   `compactionThreshold` verbatim when configured (reinterpreted as
+     *   tokens), else `floor(getModelContextWindow(model, modelContextWindows)
+     *   * DEFAULT_THRESHOLD_RATIO)`. A throwing counter logs a `'warn'` and
+     *   falls through to char mode for this check — a tokenizer bug must
+     *   never kill a run that was otherwise healthy.
+     * - **Char mode** (default) — serialized length vs.
+     *   {@link resolveCompactionThresholdChars} (the v1 chars/4 heuristic),
+     *   with the same per-run {@link OpenRouterAgentRunOptions.modelContextWindows}
+     *   overrides applied to the window lookup.
+     */
+    isOverCompactionThreshold(messages) {
+        const { tokenCounter, compactionThreshold, model, modelContextWindows, logger } = this.opts;
+        const serialized = serializeMessagesForEstimate(messages);
+        if (tokenCounter !== undefined) {
+            try {
+                const tokens = tokenCounter(serialized);
+                const thresholdTokens = resolveCompactionThresholdTokens(compactionThreshold, model, modelContextWindows);
+                return tokens >= thresholdTokens;
+            }
+            catch (err) {
+                logger?.('warn', 'tokenCounter threw — falling back to the chars/4 heuristic', {
+                    error: err,
+                });
+            }
+        }
+        const thresholdChars = resolveCompactionThresholdChars(compactionThreshold, model, modelContextWindows);
+        return serialized.length >= thresholdChars;
     }
     /**
      * Abort the in-flight run. Fires the run's internal AbortController, which
@@ -835,6 +895,16 @@ export class OpenRouterAgentRun {
                     maxBudgetUsd: config.maxBudgetUsd ?? maxBudgetUsd,
                     maxTransientRetries,
                     transientRetryBaseDelayMs,
+                    // Reliability + compaction-accounting knobs ride the same
+                    // inheritance rails as the retry budget above: the parent's
+                    // resolved values flow into every child verbatim (no per-spawn
+                    // override surface in v1 — the spawn schema stays lean).
+                    streamStallTimeoutMs: this.opts.streamStallTimeoutMs,
+                    toolTimeoutMs: this.opts.toolTimeoutMs,
+                    ...(this.opts.modelContextWindows !== undefined && {
+                        modelContextWindows: this.opts.modelContextWindows,
+                    }),
+                    ...(this.opts.tokenCounter !== undefined && { tokenCounter: this.opts.tokenCounter }),
                     appTitle,
                     logsRoot,
                     persistSession,
@@ -977,20 +1047,45 @@ export class OpenRouterAgentRun {
                     return { behavior: 'allow' };
                 }
                 : undefined;
-            // Order of wraps (innermost → outermost): ctx-bound execute, then
-            // canUseTool gate, then hook wrapper. The hook wrapper is outermost so
-            // PreToolUse fires before the canUseTool decision (audit always fires,
-            // even on deny), and PostToolUse fires after the inner result/error is
-            // resolved — including the synth-deny payload from a canUseTool denial.
+            // Stall-clock suspension state shared by every wrapped tool and the
+            // per-cycle stall monitors. `toolsInFlight` counts client tool executes
+            // currently running (any > 0 suspends the stall watchdog — tool runs
+            // legitimately silence the SSE stream); `activeStallMonitor` points at
+            // the CURRENT cycle attempt's monitor so a tool that settles can reset
+            // the stall clock (a tool finishing after its cycle already unwound —
+            // e.g. a timed-out execute — sees `undefined` and no-ops).
+            let toolsInFlight = 0;
+            let activeStallMonitor;
+            const toolActivity = {
+                begin: () => {
+                    toolsInFlight++;
+                },
+                end: () => {
+                    toolsInFlight--;
+                    activeStallMonitor?.bump();
+                },
+            };
+            // Order of wraps (innermost → outermost): per-tool timeout deadline
+            // around the ctx-bound execute, then the canUseTool gate, then the
+            // hook wrapper, then the stall-clock activity tracker. The timeout is
+            // innermost so PostToolUse and the tool_result both reflect the
+            // timeout error; the hook wrapper
+            // sits outside the canUseTool gate so PreToolUse fires before the
+            // permission decision (audit always fires, even on deny) and
+            // PostToolUse fires after the inner result/error is resolved —
+            // including the synth-deny payload from a canUseTool denial. The
+            // activity tracker is outermost AND unconditional so the stall clock
+            // suspends across the whole pipeline (permission prompts included)
+            // regardless of whether canUseTool/onHook are wired.
             const wrapTool = (t) => {
-                let wrapped = t;
+                let wrapped = wrapToolWithTimeout(t, this.opts.toolTimeoutMs);
                 if (composedCanUseTool) {
                     wrapped = wrapToolWithPermission(wrapped, composedCanUseTool);
                 }
                 if (onHook) {
                     wrapped = wrapToolWithHooks(wrapped, safeFireHook, logger);
                 }
-                return wrapped;
+                return wrapToolWithActivityTracker(wrapped, toolActivity);
             };
             const baseTools = this.hasCustomTools
                 ? userTools
@@ -1273,8 +1368,20 @@ export class OpenRouterAgentRun {
                 // failed-and-retried predecessor cycle must not poison this attempt's
                 // post-loop safety net or the outer catch's reason extraction.
                 pendingFailedEvent = null;
+                // Hung-stream watchdog for this cycle ATTEMPT (a transient retry of
+                // the cycle creates a fresh monitor with a fresh clock). `0` disables
+                // — the raw SDK stream is consumed directly, byte-identical to the
+                // pre-watchdog behavior. Disposed in the cycle finally below (and
+                // eagerly after a clean drain) so no timer outlives its cycle.
+                const stallMonitor = this.opts.streamStallTimeoutMs > 0
+                    ? createStallMonitor(this.opts.streamStallTimeoutMs, () => toolsInFlight > 0)
+                    : undefined;
+                activeStallMonitor = stallMonitor;
+                const cycleStream = stallMonitor
+                    ? monitorStream(result.getFullResponsesStream(), stallMonitor)
+                    : result.getFullResponsesStream();
                 try {
-                    for await (const event of result.getFullResponsesStream()) {
+                    for await (const event of cycleStream) {
                         // Tool results emitted as part of an aborted run are still useful — they
                         // carry the cancellation observability for the consumer — so they are
                         // forwarded even after abort. Everything else (text deltas, turn
@@ -1333,6 +1440,20 @@ export class OpenRouterAgentRun {
                             const delta = event.delta;
                             if (delta) {
                                 yield { type: 'text_delta', content: delta };
+                            }
+                            continue;
+                        }
+                        // Live reasoning text from reasoning models (the SDK's
+                        // `ReasoningDeltaEvent`). Mirrors the `text_delta` handling above:
+                        // dropped post-abort, empty deltas skipped. Encrypted reasoning
+                        // items never produce these events — only plaintext reasoning
+                        // streams (see the `reasoning_delta` JSDoc in src/events.ts).
+                        if ('type' in event && event.type === 'response.reasoning_text.delta') {
+                            if (signal.aborted)
+                                continue;
+                            const delta = event.delta;
+                            if (delta) {
+                                yield { type: 'reasoning_delta', content: delta };
                             }
                             continue;
                         }
@@ -1424,6 +1545,11 @@ export class OpenRouterAgentRun {
                             continue;
                         }
                     }
+                    // The stream drained cleanly — stand the watchdog down BEFORE the
+                    // post-loop safety nets: the `await result.getResponse()` below is
+                    // a settled-promise fetch, not stream activity, and must never be
+                    // racing a stall rejection.
+                    stallMonitor?.dispose();
                     // Safety net for `response.failed`: if the harness captured a
                     // failed event but the SDK's own consumer somehow did not throw
                     // (or this cycle's SSE simply ended after the failure with no
@@ -1458,6 +1584,13 @@ export class OpenRouterAgentRun {
                     // unobserved while we sleep through the backoff window would
                     // surface as an `unhandledRejection` that kills the host process.
                     void result.getResponse().catch(() => undefined);
+                    // A stall means the SDK stream is dead but still "open" — tear the
+                    // underlying request down so the dead connection doesn't linger
+                    // across the retry (the orphaned iterator `next()` was already
+                    // catch-drained inside monitorStream).
+                    if (err instanceof StreamStallError) {
+                        void result.cancel().catch(() => undefined);
+                    }
                     // Explicit `: number` breaks a TS7022 circularity: the literal
                     // assigned to `retryState` below references this local, and the
                     // flow-narrowed type of `retryState` here depends on that literal.
@@ -1497,6 +1630,11 @@ export class OpenRouterAgentRun {
                     continue;
                 }
                 finally {
+                    // Idempotent re-dispose covers every unwind path (throw, abort
+                    // break, retry continue) — a dangling watchdog timer would keep
+                    // the event loop alive and leak across cycles/tests.
+                    stallMonitor?.dispose();
+                    activeStallMonitor = undefined;
                     resolveCycle();
                     this.#currentCycle = undefined;
                 }
@@ -1749,9 +1887,7 @@ export class OpenRouterAgentRun {
                 try {
                     const persistedState = await this.stateAccessor.load();
                     const messages = persistedState?.messages;
-                    const chars = estimateMessagesCharLength(messages);
-                    const thresholdChars = resolveCompactionThresholdChars(this.opts.compactionThreshold, this.opts.model);
-                    if (chars >= thresholdChars) {
+                    if (this.isOverCompactionThreshold(messages)) {
                         await this.compact('auto');
                     }
                 }
@@ -1822,6 +1958,127 @@ function wrapToolWithPermission(t, canUseTool) {
         }
         const effectiveInput = decision.updatedInput !== undefined ? decision.updatedInput : input;
         return originalExecute(effectiveInput, ctx);
+    };
+    return {
+        ...t,
+        function: {
+            ...t.function,
+            execute: wrappedExecute,
+        },
+    };
+}
+/**
+ * Built-in tools exempt from the {@link OpenRouterAgentRunOptions.toolTimeoutMs}
+ * deadline: `bash` carries its own timeout with a model-controllable
+ * `timeout_ms` input (default 30s, clamped to 10 min), and the subagent
+ * spawners are long-running by design (bounded by each child's own
+ * `maxTurns` / `maxBudgetUsd` instead). MCP-bridged tools are exempted
+ * separately by their `<serverName>__<toolName>` name marker — see
+ * {@link isToolTimeoutExempt}.
+ */
+const TOOL_TIMEOUT_EXEMPT_NAMES = new Set([
+    'bash',
+    'spawn_subagent',
+    'spawn_subagents',
+]);
+/**
+ * Whether a client tool name is exempt from the per-tool execute deadline.
+ * Exact-name matches against {@link TOOL_TIMEOUT_EXEMPT_NAMES}, plus any
+ * name containing the MCP bridge's `__` separator (`<serverName>__<toolName>`
+ * — external servers own their timeout semantics). The separator check is a
+ * substring test, so a custom tool whose name happens to contain `__` is
+ * also (conservatively) exempt — documented on the option JSDoc.
+ */
+function isToolTimeoutExempt(name) {
+    return TOOL_TIMEOUT_EXEMPT_NAMES.has(name) || name.includes(MCP_TOOL_NAME_SEPARATOR);
+}
+/**
+ * Wrap a Tool's execute with a settle-or-timeout race (the
+ * {@link OpenRouterAgentRunOptions.toolTimeoutMs} deadline). Composed as the
+ * INNERMOST wrapper — directly around the ctx-bound execute, inside the
+ * permission/hook wrappers — so a timeout surfaces through `PostToolUse` and
+ * the `tool_result` exactly like any other tool failure. On timeout the
+ * wrapper throws `JSON.stringify({ error, timedOut: true })`, mirroring the
+ * `canUseTool` deny convention ({@link wrapToolWithPermission}): the OR SDK
+ * catches the throw, wraps it in its own `{"error": …}` envelope, and
+ * {@link detectToolResultIsError} flags the result. The losing execute
+ * promise gets a no-op `.catch` so its later settlement never becomes an
+ * `unhandledRejection`; its underlying I/O is NOT cancelled (no signal
+ * plumbing in v1 — the loop just stops waiting).
+ *
+ * Pass-throughs: `timeoutMs <= 0` (disabled), server tools (no client-side
+ * execute), tools without a local execute, and {@link isToolTimeoutExempt}
+ * names.
+ */
+function wrapToolWithTimeout(t, timeoutMs) {
+    if (timeoutMs <= 0 || !isClientTool(t))
+        return t;
+    const fn = t.function;
+    const name = fn.name;
+    const originalExecute = fn.execute;
+    if (typeof originalExecute !== 'function' || isToolTimeoutExempt(name))
+        return t;
+    const wrappedExecute = async (input, ctx) => {
+        let timer;
+        const deadline = new Promise((_resolve, reject) => {
+            timer = setTimeout(() => {
+                reject(new Error(JSON.stringify({
+                    error: `tool ${name} timed out after ${timeoutMs}ms`,
+                    timedOut: true,
+                })));
+            }, timeoutMs);
+        });
+        const execution = Promise.resolve(originalExecute(input, ctx));
+        try {
+            return await Promise.race([execution, deadline]);
+        }
+        catch (err) {
+            // When the deadline won, `execution` is orphaned and may reject later
+            // — attach a no-op handler so it can't become an unhandledRejection.
+            // When `execution` itself threw, the extra handler is harmless (the
+            // rejection was already observed via the race).
+            void execution.catch(() => undefined);
+            throw err;
+        }
+        finally {
+            clearTimeout(timer);
+        }
+    };
+    return {
+        ...t,
+        function: {
+            ...t.function,
+            execute: wrappedExecute,
+        },
+    };
+}
+/**
+ * Wrap a Tool's execute with {@link ToolActivitySink} begin/end signals.
+ * Composed OUTERMOST and UNCONDITIONALLY (unlike the permission/hook
+ * wrappers, which only apply when their callbacks are wired) so the stall
+ * watchdog's suspension covers the entire tool pipeline — PreToolUse hooks,
+ * permission prompts (which can block on a human for minutes), and the
+ * execute itself — for every tool path: built-ins, custom tools, and
+ * MCP-bridge tools all flow through the single `wrapTool` composition in
+ * the agent loop. Server tools and execute-less tool forms pass through
+ * untouched (nothing client-side runs for them, so there is no silence to
+ * excuse).
+ */
+function wrapToolWithActivityTracker(t, sink) {
+    if (!isClientTool(t))
+        return t;
+    const fn = t.function;
+    const originalExecute = fn.execute;
+    if (typeof originalExecute !== 'function')
+        return t;
+    const wrappedExecute = async (input, ctx) => {
+        sink.begin();
+        try {
+            return await originalExecute(input, ctx);
+        }
+        finally {
+            sink.end();
+        }
     };
     return {
         ...t,
@@ -2028,18 +2285,24 @@ function extractStatusCode(err) {
 /**
  * Classify a failed callModel cycle as transient (worth retrying) or not.
  *
- * Precedence: when a `response.failed` event was captured for the attempt,
- * its structured `response.error.code` is authoritative — the SDK's own
- * rethrow of the same failure is a `JSON.stringify` of that envelope, so
- * falling through to the thrown error would just re-parse worse data. Only
- * `server_error` / `overloaded` codes qualify. Without a captured event
- * (HTTP-level failure before the SSE stream established, or the silent-hang
- * surfacing path), an HTTP 5xx-class `statusCode` on the thrown error (or
- * its `cause`) qualifies. Everything else — 4xx-class errors, moderation,
- * unknown shapes — is non-retryable; aborts are excluded by the caller
- * before this is consulted.
+ * A {@link StreamStallError} (hung-stream watchdog fired) is always
+ * transient — a dead connection is exactly the class of failure a fresh
+ * cycle attempt heals — and is checked first because a stall says nothing
+ * about any `response.failed` event that may have been captured earlier in
+ * the same attempt. Otherwise: when a `response.failed` event was captured
+ * for the attempt, its structured `response.error.code` is authoritative —
+ * the SDK's own rethrow of the same failure is a `JSON.stringify` of that
+ * envelope, so falling through to the thrown error would just re-parse
+ * worse data. Only `server_error` / `overloaded` codes qualify. Without a
+ * captured event (HTTP-level failure before the SSE stream established, or
+ * the silent-hang surfacing path), an HTTP 5xx-class `statusCode` on the
+ * thrown error (or its `cause`) qualifies. Everything else — 4xx-class
+ * errors, moderation, unknown shapes — is non-retryable; aborts are
+ * excluded by the caller before this is consulted.
  */
 function isTransientCycleFailure(failedEvent, err) {
+    if (err instanceof StreamStallError)
+        return true;
     if (failedEvent !== null) {
         const code = failedEvent
             .response?.error?.code;

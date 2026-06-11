@@ -6,7 +6,8 @@ export { allTools, DEFAULT_TOOL_CONTEXT, askUserQuestionTool, taskCreateTool, ta
 export { tool, createSdkMcpServer } from './custom-tools.js';
 export { forkSession } from './session-fork.js';
 export { createCheckpoint, listCheckpoints, restoreCheckpoint, encodePath, decodePath, MAX_CHECKPOINTS_PER_SESSION, } from './checkpoints.js';
-export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_KEEP_RECENT_TURNS, DEFAULT_THRESHOLD_RATIO, MODEL_CONTEXT_WINDOWS, estimateMessagesCharLength, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, } from './compaction.js';
+export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_KEEP_RECENT_TURNS, DEFAULT_THRESHOLD_RATIO, MODEL_CONTEXT_WINDOWS, estimateMessagesCharLength, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 export { accountInfo, supportedModels } from './openrouter-api.js';
 export { loadMcpConfig } from './mcp/config.js';
 export { McpBridge, MCP_TOOL_NAME_SEPARATOR, defaultClientFactory, mapMcpToolToTool, } from './mcp/bridge.js';

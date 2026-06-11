@@ -114,7 +114,11 @@ export {
   getModelContextWindow,
   partitionMessages,
   resolveCompactionThresholdChars,
+  resolveCompactionThresholdTokens,
+  serializeMessagesForEstimate,
 } from './compaction.js';
+export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
+export type { StallMonitor } from './stall.js';
 export { accountInfo, supportedModels } from './openrouter-api.js';
 export type { AccountInfo, ModelInfo } from './openrouter-api.js';
 export { loadMcpConfig } from './mcp/config.js';

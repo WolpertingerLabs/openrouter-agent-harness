@@ -710,6 +710,198 @@ describe('integration: context compaction', () => {
     expect(logEntries.find((l) => l.message === 'Auto-compaction failed')).toBeUndefined();
   });
 
+  it('tokenCounter mode: triggers compaction at the token boundary and receives the canonical serialization', async () => {
+    const seedMessages = [
+      { role: 'user', content: 'one' },
+      { role: 'assistant', content: 'two' },
+      { role: 'user', content: 'three' },
+      { role: 'assistant', content: 'four' },
+      { role: 'user', content: 'five' },
+      { role: 'assistant', content: 'six' },
+    ];
+    await seedState({ logsRoot, sessionId: SESSION, messages: seedMessages });
+    state.fixtureQueue = [parentFixture(), compactFixture('TOKEN-SUMMARY')];
+
+    const counterArgs: string[] = [];
+    const hookEvents: HookEvent[] = [];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      // With a tokenCounter wired, compactionThreshold is TOKENS: counter
+      // returns exactly the threshold → `>=` fires.
+      compactionThreshold: 1_000,
+      tokenCounter: (serialized) => {
+        counterArgs.push(serialized);
+        return 1_000;
+      },
+      keepRecentTurns: 2,
+      onHook: (event) => {
+        hookEvents.push(event);
+      },
+    });
+
+    for await (const _ of run) void _;
+
+    expect(hookEvents).toContain('PreCompact');
+    expect(state.callModelArgs.length).toBe(2); // parent + compaction sub-call
+    // The counter received the same serialization the char heuristic
+    // measures: per-item JSON, concatenated (the mocked SDK never rewrites
+    // the seeded state, so the post-run history is the seed verbatim).
+    expect(counterArgs).toHaveLength(1);
+    expect(counterArgs[0]).toBe(seedMessages.map((m) => JSON.stringify(m)).join(''));
+  });
+
+  it('tokenCounter mode: does NOT trigger one token below the threshold', async () => {
+    // Char-wise this seed is far above the tiny char threshold a configured
+    // 1_000 would mean — proving the TOKEN reinterpretation is in effect.
+    await seedState({
+      logsRoot,
+      sessionId: SESSION,
+      messages: [
+        { role: 'user', content: 'x'.repeat(5_000) },
+        { role: 'assistant', content: 'y'.repeat(5_000) },
+        { role: 'user', content: 'z'.repeat(5_000) },
+      ],
+    });
+    state.fixture = parentFixture();
+
+    const hookEvents: HookEvent[] = [];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      compactionThreshold: 1_000,
+      tokenCounter: () => 999,
+      keepRecentTurns: 1,
+      onHook: (event) => {
+        hookEvents.push(event);
+      },
+    });
+
+    for await (const _ of run) void _;
+
+    expect(state.callModelArgs.length).toBe(1); // no compaction sub-call
+    expect(hookEvents).not.toContain('PreCompact');
+  });
+
+  it('tokenCounter mode: derives the default TOKEN threshold from modelContextWindows overrides', async () => {
+    await seedState({
+      logsRoot,
+      sessionId: SESSION,
+      messages: [
+        { role: 'user', content: 'a' },
+        { role: 'assistant', content: 'b' },
+        { role: 'user', content: 'c' },
+      ],
+    });
+    state.fixtureQueue = [parentFixture(), compactFixture('OVERRIDE-SUMMARY')];
+
+    const hookEvents: HookEvent[] = [];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      // 'tiny/model' is unknown to the static table (would default to 128k →
+      // threshold 102_400 tokens). The override teaches a 100-token window →
+      // threshold floor(100 * 0.8) = 80; the counter's 80 crosses it.
+      model: 'tiny/model',
+      modelContextWindows: { 'tiny/model': 100 },
+      tokenCounter: () => 80,
+      keepRecentTurns: 1,
+      onHook: (event) => {
+        hookEvents.push(event);
+      },
+    });
+
+    for await (const _ of run) void _;
+
+    expect(hookEvents).toContain('PreCompact');
+    expect(state.callModelArgs.length).toBe(2);
+  });
+
+  it('tokenCounter throw: logs a warn and falls back to the char heuristic for the check', async () => {
+    await seedState({
+      logsRoot,
+      sessionId: SESSION,
+      messages: [
+        { role: 'user', content: 'x'.repeat(200) },
+        { role: 'assistant', content: 'y'.repeat(200) },
+        { role: 'user', content: 'z'.repeat(200) },
+      ],
+    });
+    state.fixtureQueue = [parentFixture(), compactFixture('FALLBACK-SUMMARY')];
+
+    const logEntries: Array<{ level: string; message: string }> = [];
+    const hookEvents: HookEvent[] = [];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      // Under the fallback, the configured threshold reads as CHARS again —
+      // 100 chars is far below the ~600-char seed, so compaction fires.
+      compactionThreshold: 100,
+      tokenCounter: () => {
+        throw new Error('tokenizer exploded');
+      },
+      keepRecentTurns: 1,
+      logger: (level, message) => {
+        logEntries.push({ level, message });
+      },
+      onHook: (event) => {
+        hookEvents.push(event);
+      },
+    });
+
+    for await (const _ of run) void _;
+
+    const warn = logEntries.find((l) => l.message.includes('tokenCounter threw'));
+    expect(warn).toBeDefined();
+    expect(warn?.level).toBe('warn');
+    // The char fallback still fired the compaction.
+    expect(hookEvents).toContain('PreCompact');
+    expect(state.callModelArgs.length).toBe(2);
+  });
+
+  it('char mode honours modelContextWindows overrides for the derived default threshold', async () => {
+    // ~30-char messages; override gives a 10-token window → char threshold
+    // floor(10 * 4 * 0.8) = 32 — the seed crosses it. Without the override
+    // the unknown model would default to 128k tokens (≈409k chars).
+    await seedState({
+      logsRoot,
+      sessionId: SESSION,
+      messages: [
+        { role: 'user', content: 'aaaa' },
+        { role: 'assistant', content: 'bbbb' },
+        { role: 'user', content: 'cccc' },
+      ],
+    });
+    state.fixtureQueue = [parentFixture(), compactFixture('CHAR-OVERRIDE-SUMMARY')];
+
+    const hookEvents: HookEvent[] = [];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'tiny/model',
+      modelContextWindows: { 'tiny/model': 10 },
+      keepRecentTurns: 1,
+      onHook: (event) => {
+        hookEvents.push(event);
+      },
+    });
+
+    for await (const _ of run) void _;
+
+    expect(hookEvents).toContain('PreCompact');
+    expect(state.callModelArgs.length).toBe(2);
+  });
+
   it('compact() is a no-op when there is no saved state or messages are short', async () => {
     // Case 1: no state file at all.
     const run1 = new OpenRouterAgentRun({
