@@ -55,9 +55,13 @@ export default defineConfig({
         // compaction.ts and the agent prune path are fully covered, including
         // the offload-write-failure fallback. Functions stay at 98.6.
         //
-        // Phase 7 stack merge (7.1+7.2+7.3+7.4 together): each card
+        // Phase 7.5 (summary quality & ergonomics): structured prompt,
+        // verbatim user messages, live `compaction` event + PostCompact hook,
+        // compactionModel. Functions stay at 98.6.
+        //
+        // Phase 7 stack merge (7.1+7.2+7.3+7.4+7.5 together): each card
         // individually ratcheted branches to 96.2 (suite ~96.5 in isolation).
-        // Stacked, the union's branch ratio settles at ~96.17 — the documented
+        // Stacked, the union's branch ratio settles at ~96.1 — the documented
         // defensive branches above (cache guard, failure-counter save, render
         // edge shapes, prune offload fallback) sum across cards. Threshold
         // relaxed to 96.1 to reflect the true merged baseline;

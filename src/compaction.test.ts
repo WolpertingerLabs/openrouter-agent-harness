@@ -4,12 +4,15 @@ import {
   COMPACTION_FAILURE_LIMIT,
   COMPACTION_MIN_SHRINK_RATIO,
   COMPACTION_PROMPT,
+  COMPACTION_SUMMARY_MARKER,
   DEFAULT_PRUNE_PROTECTED_TOOLS,
   PRUNE_CLEARED_MARKER,
   PRUNE_MIN_RECLAIM_TOKENS,
   PRUNE_PROTECT_RECENT_TOKENS,
   PRUNE_PROTECT_RECENT_TURNS,
   PRUNE_REDERIVABLE_TOOLS,
+  USER_MESSAGES_KEEP_TOKENS,
+  collectRecentUserMessages,
   planToolOutputPrune,
   pruneStoredMarker,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
@@ -990,5 +993,87 @@ describe('planToolOutputPrune — non-object items', () => {
       minReclaimTokens: 1,
     });
     expect(plan.candidates.map((c) => c.callId)).toEqual(['c1']);
+  });
+});
+
+// ——— Phase 7.5: summary quality & ergonomics ———
+
+describe('COMPACTION_PROMPT v2 (structured)', () => {
+  it('demands the eight numbered sections in order', () => {
+    const sections = [
+      '1. Primary request and intent',
+      '2. Key decisions and rationale',
+      '3. Files, paths, and identifiers',
+      '4. Errors and fixes',
+      '5. All user messages',
+      '6. Pending tasks',
+      '7. Current state',
+      '8. Next step',
+    ];
+    let cursor = 0;
+    for (const section of sections) {
+      const at = COMPACTION_PROMPT.indexOf(section);
+      expect(at).toBeGreaterThan(cursor);
+      cursor = at;
+    }
+  });
+
+  it('keeps the verbatim-quote anti-drift device and the raw-text contract', () => {
+    expect(COMPACTION_PROMPT).toMatch(/VERBATIM/);
+    expect(COMPACTION_PROMPT).toMatch(/Return only the summary/);
+  });
+});
+
+describe('collectRecentUserMessages', () => {
+  const user = (content: string) => ({ type: 'message', role: 'user', content });
+  const userBare = (content: string) => ({ role: 'user', content });
+  const assistant = (content: string) => ({ type: 'message', role: 'assistant', content });
+
+  it('collects user messages only, in chronological order', () => {
+    const msgs = [user('one'), assistant('x'), userBare('two'), assistant('y'), user('three')];
+    expect(collectRecentUserMessages(msgs)).toEqual([user('one'), userBare('two'), user('three')]);
+  });
+
+  it('excludes prior summary messages by marker so compactions never nest', () => {
+    const priorSummary = {
+      role: 'user',
+      content: `${COMPACTION_SUMMARY_MARKER}\nold summary text`,
+    };
+    const devSummary = {
+      type: 'message',
+      role: 'developer',
+      content: `${COMPACTION_SUMMARY_MARKER}\nolder summary`,
+    };
+    const msgs = [devSummary, priorSummary, user('real question')];
+    expect(collectRecentUserMessages(msgs)).toEqual([user('real question')]);
+  });
+
+  it('caps newest-first by the token estimate, skipping messages that no longer fit', () => {
+    // Each message ≈ (JSON length)/4 tokens. Budget fits only the newest two.
+    const m1 = user('a'.repeat(400)); // ~110 tokens with JSON overhead
+    const m2 = user('b'.repeat(400));
+    const m3 = user('c'.repeat(400));
+    const perMessage = Math.ceil(JSON.stringify(m1).length / CHARS_PER_TOKEN);
+    const collected = collectRecentUserMessages([m1, m2, m3], perMessage * 2);
+    expect(collected).toEqual([m2, m3]);
+  });
+
+  it('skips an oversized older message but still keeps smaller, even older ones', () => {
+    const small = user('early');
+    const huge = user('x'.repeat(8_000));
+    const recent = user('latest');
+    const budget =
+      Math.ceil(JSON.stringify(small).length / CHARS_PER_TOKEN) +
+      Math.ceil(JSON.stringify(recent).length / CHARS_PER_TOKEN);
+    expect(collectRecentUserMessages([small, huge, recent], budget)).toEqual([small, recent]);
+  });
+
+  it('ignores non-message user-role items and non-object entries', () => {
+    const odd = { type: 'function_call_output', role: 'user', output: 'x' };
+    expect(collectRecentUserMessages([odd, null, 'loose', user('keep')])).toEqual([user('keep')]);
+  });
+
+  it('uses the documented 20k default cap', () => {
+    expect(USER_MESSAGES_KEEP_TOKENS).toBe(20_000);
   });
 });

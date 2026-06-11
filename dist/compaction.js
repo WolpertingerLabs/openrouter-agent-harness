@@ -5,13 +5,44 @@
  * `src/agent.ts`.
  */
 /**
- * System prompt sent to the summarizer model during compaction. v1 is a fixed
- * string constant (not configurable) — exported here so tests and external
- * code can reason about the exact instructions the summarizer receives. The
- * partition prefix is sent verbatim as the model's `input`; this prompt is
- * passed via the `instructions` field.
+ * System prompt sent to the summarizer model during compaction. Exported so
+ * tests and external code can reason about the exact instructions the
+ * summarizer receives. The partition prefix is sent as the model's `input`;
+ * this prompt is passed via the `instructions` field.
+ *
+ * Phase 7.5: v2 of the same contract — a **structured** summary schema
+ * (numbered sections, Claude Code precedent) replaces the v1 single
+ * narrative. The verbatim-quoted "next step" section is the anti-drift
+ * device: a resumed session re-reads the exact words rather than a
+ * paraphrase. The closing "Return only the summary" sentence is a hard
+ * contract relied on by consumers that embed the output verbatim.
  */
-export const COMPACTION_PROMPT = 'You are a context-compaction assistant. The user message is a role-labelled transcript of the prefix of an ongoing conversation between a user and an AI coding agent (including tool calls and truncated tool outputs) that has grown too long to keep in full. Summarize this prefix into a concise narrative that preserves: (1) the user goals and constraints, (2) decisions made and their rationale, (3) files, paths, and identifiers referenced, (4) any unresolved tasks. Omit verbose tool outputs that no longer matter. Return only the summary text — do not preface it with commentary, do not wrap it in markdown, do not include a heading.';
+export const COMPACTION_PROMPT = 'You are a context-compaction assistant. The user message is a role-labelled transcript of the prefix of an ongoing conversation between a user and an AI coding agent (including tool calls and truncated tool outputs) that has grown too long to keep in full. Produce a structured summary of this prefix with EXACTLY the following numbered sections, in order:\n' +
+    '1. Primary request and intent — what the user is ultimately trying to accomplish, and any constraints they imposed.\n' +
+    '2. Key decisions and rationale — choices made so far and why.\n' +
+    '3. Files, paths, and identifiers — every file, directory, function, branch, URL, or id referenced, with short code snippets where they are load-bearing.\n' +
+    '4. Errors and fixes — problems hit, how they were resolved, and any EXPLICIT corrections the user gave.\n' +
+    '5. All user messages — a condensed list of every user message in the prefix, in order.\n' +
+    '6. Pending tasks — work requested but not yet done.\n' +
+    '7. Current state — where the work stands right now.\n' +
+    '8. Next step — the immediate next action, quoting the most recent task-defining instructions VERBATIM from the conversation.\n' +
+    'Omit verbose tool outputs that no longer matter. Return only the summary text — do not preface it with commentary, do not wrap it in markdown fences, do not add headings beyond the numbered sections.';
+/**
+ * Phase 7.5: leading marker of the `developer`-role summary message a
+ * compaction writes back into the history. Used to (a) label the summary for
+ * the model and (b) EXCLUDE prior summaries from the verbatim user-message
+ * keep set on repeat compactions, so summaries never nest
+ * (summary-of-summary drift).
+ */
+export const COMPACTION_SUMMARY_MARKER = '[Compacted prior context]';
+/**
+ * Phase 7.5: token cap (chars/{@link CHARS_PER_TOKEN} estimate) for the
+ * recent user messages preserved VERBATIM in the rebuilt history, newest
+ * first (Codex keeps user messages newest-first ≤20k tokens). User messages
+ * are sacred — a paraphrase in the summary is no substitute for the user's
+ * actual words.
+ */
+export const USER_MESSAGES_KEEP_TOKENS = 20_000;
 /**
  * Approximate average character → token ratio used by the v1 char-length
  * heuristic. The ~4-chars-per-token figure is the conservative end of the
@@ -772,5 +803,41 @@ export function planToolOutputPrune(messages, opts = {}) {
         return empty;
     candidates.reverse(); // oldest first, for stable offload naming/logging
     return { candidates, reclaimedTokens: reclaimed };
+}
+/**
+ * Phase 7.5: collect the `user`-role messages from a (to-be-summarized)
+ * prefix that should survive compaction VERBATIM — newest first under a
+ * `maxTokens` cap (chars/{@link CHARS_PER_TOKEN} estimate per message),
+ * returned in their ORIGINAL chronological order for re-insertion after the
+ * summary message.
+ *
+ * Prior summary messages are excluded twice over: by role (summaries are
+ * `developer`-role) and by the {@link COMPACTION_SUMMARY_MARKER} content
+ * prefix — so repeat compactions never nest a summary inside the kept user
+ * messages. Both the typed (`type: 'message'`) and bare `{ role, content }`
+ * item shapes are recognized; a message that alone exceeds the remaining
+ * budget is skipped (newest-first priority, no partial messages).
+ */
+export function collectRecentUserMessages(messages, maxTokens = USER_MESSAGES_KEEP_TOKENS) {
+    const collected = [];
+    let budget = maxTokens;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const item = messages[i];
+        if (item === null || typeof item !== 'object')
+            continue;
+        if (item.role !== 'user')
+            continue;
+        if (item.type !== undefined && item.type !== 'message')
+            continue;
+        if (typeof item.content === 'string' && item.content.startsWith(COMPACTION_SUMMARY_MARKER)) {
+            continue;
+        }
+        const tokens = Math.ceil(serializeMessagesForEstimate([item]).length / CHARS_PER_TOKEN);
+        if (tokens > budget)
+            continue;
+        budget -= tokens;
+        collected.push(messages[i]);
+    }
+    return collected.reverse();
 }
 //# sourceMappingURL=compaction.js.map

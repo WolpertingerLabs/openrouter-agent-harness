@@ -65,6 +65,24 @@ export type AgentCoreEvent = {
     usage: TokenUsage | null;
     costUsd: number;
 } | {
+    /**
+     * Phase 7.5: an auto-compaction completed during this run — emitted
+     * in-stream (immediately BEFORE `stream_complete`) so consumers learn
+     * about the history rewrite live instead of discovering it from the
+     * transcript on reload. `droppedMessages` counts the summarized prefix
+     * items; `preEstimatedTokens` / `postEstimatedTokens` are
+     * chars/4-estimates of the persisted history before and after the
+     * rewrite. Manual `compact()` calls happen outside a run and produce
+     * no stream — subscribe to the `PostCompact` hook to observe those.
+     * A consumer that abandons the stream mid-run can miss this event;
+     * `PostCompact` fires regardless.
+     */
+    type: 'compaction';
+    reason: 'auto' | 'manual';
+    droppedMessages: number;
+    preEstimatedTokens: number;
+    postEstimatedTokens: number;
+} | {
     type: 'stream_complete';
     status: AgentCoreEventStatus;
     usage?: TokenUsage | null;
@@ -98,7 +116,7 @@ export type AgentCoreEvent = {
  * custom tools via {@link ToolContext.notify}) emit it to push status updates
  * to subscribers.
  */
-export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'Setup' | 'Notification' | 'SubagentStart' | 'SubagentEnd' | 'PreCompact' | 'McpServerStart' | 'McpServerStop' | 'PluginStart' | 'PluginStop';
+export type HookEvent = 'PreToolUse' | 'PostToolUse' | 'SessionStart' | 'SessionEnd' | 'Stop' | 'Setup' | 'Notification' | 'SubagentStart' | 'SubagentEnd' | 'PreCompact' | 'PostCompact' | 'McpServerStart' | 'McpServerStop' | 'PluginStart' | 'PluginStop';
 /**
  * Summary of a finished subagent run. Mirrors the fields of a `stream_complete`
  * {@link AgentCoreEvent} (the same shape surfaced as a `ResultMessage` on the
@@ -242,6 +260,22 @@ export type HookPayload = {
     keepRecentTurns?: number;
     keepBudgetTokens?: number;
     reason: 'auto' | 'manual';
+}
+/**
+ * Phase 7.5: fires immediately AFTER a compaction successfully rewrote the
+ * persisted state — the symmetric bookend to `PreCompact` (which fires
+ * before the summarizer call). Mirrors the in-stream `compaction`
+ * {@link AgentCoreEvent} (auto compactions only emit that event; manual
+ * `compact()` calls have no stream, so this hook is the only signal for
+ * them). Audit-only, same conventions as `PreCompact`.
+ */
+ | {
+    event: 'PostCompact';
+    reason: 'auto' | 'manual';
+    droppedMessages: number;
+    preEstimatedTokens: number;
+    postEstimatedTokens: number;
+    summaryText: string;
 }
 /**
  * Phase 5.2.5: fires once per MCP server immediately AFTER its JSON-RPC

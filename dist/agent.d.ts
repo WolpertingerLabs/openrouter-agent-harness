@@ -29,6 +29,20 @@ export declare const MODEL_CONTEXT_LENGTH_CACHE: ModelContextLengthCache;
 export declare const DEFAULT_INSTRUCTIONS = "You are a code editing agent. You can read, write, and edit files, list directories, and run shell commands. Work step by step: read files to understand the codebase, then make changes. Always verify your changes.";
 export type AgentLoggerLevel = 'debug' | 'info' | 'warn' | 'error';
 export type AgentLogger = (level: AgentLoggerLevel, message: string, fields?: Record<string, unknown>) => void;
+/**
+ * Phase 7.5: outcome of a completed compaction, returned by
+ * {@link OpenRouterAgentRun.compact} (`null` when the call no-ops) and
+ * carried on the in-stream `compaction` {@link AgentCoreEvent} and the
+ * `PostCompact` hook payload. Token figures are chars/4 estimates of the
+ * persisted history before/after the rewrite.
+ */
+export interface CompactionResult {
+    reason: 'auto' | 'manual';
+    droppedMessages: number;
+    preEstimatedTokens: number;
+    postEstimatedTokens: number;
+    summaryText: string;
+}
 export type CanUseToolResult = {
     behavior: 'allow';
     updatedInput?: unknown;
@@ -647,6 +661,13 @@ export interface OpenRouterAgentRunOptions {
      */
     pruneProtectedTools?: readonly string[];
     /**
+     * Phase 7.5: model id used for the compaction summarizer call. Summaries
+     * are a mechanical condensation task — a cheaper/faster model often
+     * suffices (aider weak-model / opencode compaction-agent precedent).
+     * Defaults to the run's {@link model}.
+     */
+    compactionModel?: string;
+    /**
      * Phase 5.2.4: explicit list of MCP servers to spawn for this run.
      * When set, {@link autoDiscoverMcp} is ignored and the bridge uses this
      * array verbatim. Each entry is the discriminated union from
@@ -911,7 +932,9 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      * leaves the original state untouched and re-throws so the caller can
      * decide how to recover.
      */
-    compact(reason?: 'auto' | 'manual'): Promise<void>;
+    compact(reason?: 'auto' | 'manual', options?: {
+        instructions?: string;
+    }): Promise<CompactionResult | null>;
     /**
      * Decide whether the persisted message history has crossed the
      * auto-compaction threshold. Two accounting modes share one serialization
