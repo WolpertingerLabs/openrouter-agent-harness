@@ -143,6 +143,7 @@ export type {
   AssistantMessage,
   UserMessage,
   ResultMessage,
+  ThinkingContent,
   TextContent,
   ToolUseContent,
   ToolResultContent,

@@ -2129,6 +2129,20 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
               }
               continue;
             }
+            // Live reasoning text from reasoning models (the SDK's
+            // `ReasoningDeltaEvent`). Mirrors the `text_delta` handling above:
+            // dropped post-abort, empty deltas skipped. Encrypted reasoning
+            // items never produce these events — only plaintext reasoning
+            // streams (see the `reasoning_delta` JSDoc in src/events.ts).
+            if ('type' in event && event.type === 'response.reasoning_text.delta') {
+              if (signal.aborted) continue;
+              const delta = (event as { type: string; delta: string }).delta;
+              if (delta) {
+                yield { type: 'reasoning_delta', content: delta };
+              }
+              continue;
+            }
+
             // A `response.failed` event means the request was accepted (200 + SSE
             // established) but generation failed afterward (upstream provider
             // error, moderation block, "no endpoints available", timeout, …).

@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`reasoning_delta` core event — live reasoning/thinking streaming.**
+  Reasoning models that stream plaintext reasoning over the OR Responses
+  wire (`response.reasoning_text.delta` SSE events) now surface it live:
+  the agent loop yields a new `{ type: 'reasoning_delta', content }`
+  `AgentCoreEvent` for each delta (Claude-SDK thinking-delta parity).
+  Encrypted reasoning items carry no delta on the wire and produce no
+  events; empty deltas are dropped and post-abort deltas filtered, matching
+  `text_delta`. The rich message stream (`run.messages()`) aggregates
+  contiguous reasoning deltas into a new `ThinkingContent`
+  (`{ type: 'thinking', thinking }`) block on the open `AssistantMessage`,
+  in strict event order — since reasoning streams before visible output,
+  thinking blocks precede the text/tool blocks they led to. Subagent
+  result text (`SubagentResultSummary.text` / the parent's
+  `spawn_subagent` tool_result) intentionally remains visible-text-only.
+  Covered by `src/agent.streaming.test.ts` + `src/messages.test.ts`.
+
 - **Bounded retry with backoff for transient `response.failed` errors.**
   A single transient upstream failure (`response.failed` with code
   `server_error` / `overloaded`, or an HTTP 5xx from the SDK) used to be
