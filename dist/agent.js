@@ -2120,7 +2120,12 @@ function wrapToolWithTimeout(t, timeoutMs) {
                 })));
             }, timeoutMs);
         });
-        const execution = Promise.resolve(originalExecute(input, ctx));
+        // Async IIFE (not Promise.resolve): a SYNCHRONOUS throw from execute
+        // must become a rejection of `execution` so it flows through the race
+        // and the finally below. A bare sync throw would escape before the
+        // try/finally and leave the deadline timer armed — rejecting with no
+        // handler 60s later as an unhandledRejection.
+        const execution = (async () => originalExecute(input, ctx))();
         try {
             return await Promise.race([execution, deadline]);
         }
