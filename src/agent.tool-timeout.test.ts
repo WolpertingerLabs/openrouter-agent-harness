@@ -179,6 +179,46 @@ describe('toolTimeoutMs — per-tool execute deadline', () => {
     }
   });
 
+  it('a SYNCHRONOUS throw from execute clears the deadline timer (no late unhandled rejection)', async () => {
+    // Regression: scenario #7's flakyFetch throws synchronously on its first
+    // call. The deadline timer must still be cleared — a dangling timer
+    // rejects the (never-raced) deadline promise 60s later as an
+    // unhandledRejection, after the run has long since completed.
+    const observed: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      observed.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      const syncThrower = {
+        type: 'function',
+        function: {
+          name: 'sync_thrower',
+          description: 'throws synchronously',
+          parameters: { type: 'object', properties: {} },
+          execute: () => {
+            throw new Error('sync transient failure');
+          },
+        },
+      } as unknown as Tool;
+      callModelMock.mockImplementationOnce(toolCyclingAttempt('sync_thrower'));
+      const events = await collect(makeRun({ tools: [syncThrower] })); // default 60s deadline
+
+      expect(completeOf(events).status).toBe('success');
+      const result = toolResultOf(events);
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain('sync transient failure');
+
+      // Run well past the deadline: the cleared timer must not fire.
+      await vi.advanceTimersByTimeAsync(120_000);
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(observed).toEqual([]);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
+  });
+
   it('PostToolUse reflects the timeout error (deadline composes INSIDE the hook wrapper)', async () => {
     const hookEvents: Array<{ event: HookEvent; payload: HookPayload }> = [];
     callModelMock.mockImplementationOnce(toolCyclingAttempt('slow_custom'));
