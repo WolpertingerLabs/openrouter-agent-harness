@@ -35,7 +35,7 @@
     },
     {
       "wire": "anthropic",
-      "promptHash": "sha256:86bb37862740babd113db98eb0bfca024ca6081cff2cbaa0c4dd270fd58f360c",
+      "promptHash": "sha256:3f5dffb2078ab16402b8aeda70a1b8471e3584d882d801479f81af8095e0b04f",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -63,7 +63,7 @@
     },
     {
       "wire": "anthropic",
-      "promptHash": "sha256:bc4ee1374d538f94d5ae1b153f2a77efde1ce8f397dce2080b06a883be4c9a91",
+      "promptHash": "sha256:4f239aeca30694fcbc839ced5675eb4bd1ab097d68d11d13eff795b2589f997e",
       "turn": 0,
       "kind": "success",
       "response": {
