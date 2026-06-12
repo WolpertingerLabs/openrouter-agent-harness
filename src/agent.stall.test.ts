@@ -47,7 +47,14 @@ function completedEvent(cost: number) {
   return {
     type: 'response.completed',
     sequenceNumber: 2,
-    response: { id: 'r', model: 'm', output: [], usage: { cost } },
+    response: {
+      id: 'r',
+      model: 'm',
+      // A realistic successful response carries assistant content — a blank
+      // output would trip the empty-response net and retry the cycle.
+      output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+      usage: { cost },
+    },
   };
 }
 
