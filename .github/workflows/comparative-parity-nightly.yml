@@ -21,9 +21,16 @@
 # live by definition). See PR body's ambiguity calls for why "full set in
 # both modes" reduces to "the live-runnable set."
 #
-# Failure posture: this workflow is NEVER a merge blocker. Live runs are
-# inherently flaky (provider latency, transient 5xx, model nondeterminism).
-# The drift signal is the artifact — not the workflow's red/green status.
+# Failure posture: this workflow is never a merge blocker, and LIVE-suite
+# failures never turn it red — live runs are inherently flaky (provider
+# latency, transient 5xx, model nondeterminism); for live, the drift signal
+# is the artifact, not the workflow's red/green status. The EMULATED suite
+# is different: it is keyless and deterministic, so an emulated failure on
+# main means main itself is broken — the final "Surface emulated-suite
+# failure" step turns the run red in that case. (Lesson from 2026-06:
+# `continue-on-error: true` on the emulated step kept eleven consecutive
+# nightlies green while every PR was blocked by the same month-boundary
+# hash drift the nightly had been detecting all along.)
 #
 # Cost posture:
 #   - Per-scenario `maxCostUsd` enforced by the harness (default $0.50).
@@ -371,3 +378,14 @@ jobs:
             tmp/comparative-emulated-result-report.jsonl
             tmp/comparative-live-cost-report.jsonl
           if-no-files-found: warn
+
+      # Last so classification/issue-filing/artifacts always complete first.
+      # The emulated suite is keyless and deterministic — a failure here is
+      # real breakage on main (the PR gate runs the same suite as a merge
+      # blocker), not live-provider flake, so it must turn the run red. See
+      # the failure-posture note in the header.
+      - name: Surface emulated-suite failure
+        if: always() && steps.emulated.outcome == 'failure'
+        run: |
+          echo "::error::Emulated comparative suite FAILED. This suite is deterministic (no API keys) — main is genuinely broken and the PR merge gate is failing for every open PR. See the 'Run emulated suite' step output."
+          exit 1
