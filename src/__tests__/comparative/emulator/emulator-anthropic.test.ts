@@ -116,6 +116,45 @@ describe('emulator: script-engine', () => {
     );
   });
 
+  it('masks the wall-clock month sentence in tool descriptions (hash survives month boundaries)', () => {
+    const withMonth = (month: string, year: string) => ({
+      ...singleTurnRequest('hi'),
+      tools: [
+        {
+          name: 'WebSearch',
+          description: `Search the web.\n  - The current month is ${month} ${year}. You MUST use this year when searching for recent information.`,
+          input_schema: { type: 'object' },
+        },
+      ],
+    });
+    const may = computePromptHash(withMonth('May', '2026'));
+    expect(computePromptHash(withMonth('June', '2026'))).toBe(may);
+    expect(computePromptHash(withMonth('December', '2027'))).toBe(may);
+    // The masked token replaces the sentence fragment, not the whole
+    // description — other description edits must still change the hash.
+    const edited = {
+      ...withMonth('May', '2026'),
+      tools: [
+        {
+          name: 'WebSearch',
+          description: 'Search the web. The current month is May 2026. Extra sentence.',
+          input_schema: { type: 'object' },
+        },
+      ],
+    };
+    expect(computePromptHash(edited)).not.toBe(may);
+  });
+
+  it('does not mask month-like text outside the known sentence pattern', () => {
+    const body = (desc: string) => ({
+      ...singleTurnRequest('hi'),
+      tools: [{ name: 't', description: desc, input_schema: { type: 'object' } }],
+    });
+    expect(computePromptHash(body('Launched in May 2026 with new features'))).not.toBe(
+      computePromptHash(body('Launched in June 2026 with new features')),
+    );
+  });
+
   it('registry lookup advances turn counter on hit', () => {
     const r = new ScriptRegistry();
     const body = singleTurnRequest('hi');

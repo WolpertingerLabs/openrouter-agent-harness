@@ -444,9 +444,9 @@ export function canonicalizeRequest(body: unknown, wire: WireFormat = 'anthropic
   }
   const canonical: Record<string, unknown> = {
     model: b.model ?? null,
-    // The Anthropic agent SDK injects two classes of nondeterministic content
-    // into the request that have to be stripped before hashing or no two
-    // captures of "the same scenario" will ever agree:
+    // The Anthropic agent SDK injects three classes of nondeterministic
+    // content into the request that have to be stripped before hashing or no
+    // two captures of "the same scenario" will ever agree:
     //
     //   - **Billing-header system block** (`x-anthropic-billing-header:
     //     cc_version=...; cch=<content-hash>;`). The `cch` token is a
@@ -458,6 +458,11 @@ export function canonicalizeRequest(body: unknown, wire: WireFormat = 'anthropic
     //     user's skills list, and the user-email/date context. Every one of
     //     these is per-developer-machine state that has nothing to do with
     //     the scenario's parity claim.
+    //   - **Wall-clock month in tool descriptions** — the CLI's built-in
+    //     `WebSearch` tool description embeds "The current month is <Month>
+    //     <Year>", regenerated from the clock at spawn time. Masked via
+    //     `maskAnthropicToolDescriptionMonth` so hashes survive month
+    //     boundaries (the 2026-06-01 suite-wide breakage).
     //
     // Both get stripped here; the remaining `system` / `messages` content
     // (custom system prompt, the actual user prompt) is what the model would
@@ -466,7 +471,7 @@ export function canonicalizeRequest(body: unknown, wire: WireFormat = 'anthropic
     // to assert on system-prompt content still can.
     system: stripAnthropicBillingHeader(b.system),
     messages: stripAnthropicSystemReminders(b.messages),
-    tools: b.tools ?? null,
+    tools: maskAnthropicToolDescriptionMonth(b.tools),
     tool_choice: b.tool_choice ?? null,
     max_tokens: b.max_tokens ?? null,
     temperature: b.temperature ?? null,
@@ -526,6 +531,48 @@ function stripAnthropicSystemReminders(messages: unknown): unknown {
       })
       .filter((b) => b !== null);
     return { ...m, content: filtered };
+  });
+}
+
+/**
+ * Token substituted for the wall-clock month/year the Claude CLI bakes into
+ * its built-in `WebSearch` tool description ("The current month is June
+ * 2026. You MUST use this year when searching…"). The sentence is generated
+ * from the machine's clock at spawn time, so without masking every recorded
+ * promptHash silently expires at the next month boundary — which is exactly
+ * what broke the whole emulated suite on 2026-06-01 (recorded in May,
+ * replayed in June; every request script-missed with a 500).
+ *
+ * Exported so re-recording tooling can reconstruct what an unmasked
+ * canonical form would have hashed to for a given month.
+ */
+export const MASKED_CURRENT_MONTH = '<masked:current-month>';
+
+/**
+ * Matches the dynamic month sentence fragment inside a tool description.
+ * Deliberately narrow: full English month name + 4-digit year immediately
+ * following the literal "The current month is". Anything else in the
+ * description is kept verbatim, consistent with the conservative filtering
+ * posture documented on `canonicalizeRequest`.
+ */
+const CURRENT_MONTH_RE =
+  /The current month is (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{4}/g;
+
+/**
+ * Mask the wall-clock month sentence in Anthropic `tools[].description`
+ * strings (see `MASKED_CURRENT_MONTH`). Only `description` is touched —
+ * tool names and `input_schema` carry no clock-derived content. Non-array
+ * input and non-object entries pass through unchanged, mirroring the other
+ * strip helpers.
+ */
+function maskAnthropicToolDescriptionMonth(tools: unknown): unknown {
+  if (!Array.isArray(tools)) return tools ?? null;
+  return tools.map((tool) => {
+    if (!tool || typeof tool !== 'object') return tool;
+    const t = tool as Record<string, unknown>;
+    if (typeof t.description !== 'string') return tool;
+    const masked = t.description.replace(CURRENT_MONTH_RE, MASKED_CURRENT_MONTH);
+    return masked === t.description ? tool : { ...t, description: masked };
   });
 }
 
