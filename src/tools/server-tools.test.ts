@@ -154,6 +154,33 @@ describe('createServerToolsHooks — afterError hook', () => {
     expect(msg).toContain('OpenRouter request failed (0)');
   });
 
+  it('attaches the HTTP status as a structured statusCode property on a 500', async () => {
+    // The transient-retry classifier in agent.ts reads a numeric `statusCode`
+    // off the thrown error (or one `cause` hop, covering the SDK's
+    // UnexpectedClientError wrap). Message-text-only errors defeat it — the
+    // 2026-06-10/11 incident shape where HTTP-level 500s never retried.
+    const body = JSON.stringify({ error: { message: 'Internal Server Error' } });
+    const response = new Response(body, { status: 500, statusText: 'Internal Server Error' });
+    const result = await callAfterError(response, null);
+    expect(result.error).toBeInstanceOf(Error);
+    expect((result.error as Error & { statusCode?: number }).statusCode).toBe(500);
+    // The message still carries the extracted body detail.
+    const msg = (result.error as Error).message;
+    expect(msg).toContain('OpenRouter request failed (500)');
+    expect(msg).toContain('Internal Server Error');
+  });
+
+  it('attaches statusCode on 4xx errors too (classifier treats them as non-transient)', async () => {
+    const response = new Response('', { status: 402, statusText: 'Payment Required' });
+    const result = await callAfterError(response, null);
+    expect((result.error as Error & { statusCode?: number }).statusCode).toBe(402);
+  });
+
+  it('attaches statusCode 0 when no response object is available', async () => {
+    const result = await callAfterError(null, null);
+    expect((result.error as Error & { statusCode?: number }).statusCode).toBe(0);
+  });
+
   it('error message includes the HTTP status code', async () => {
     const body = JSON.stringify({ error: { message: 'over quota' } });
     const response = new Response(body, { status: 429, statusText: 'Too Many Requests' });

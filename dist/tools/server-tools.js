@@ -103,10 +103,15 @@ export function createServerToolsHooks() {
             catch {
                 // Keep statusText as the detail if reading the response body fails.
             }
-            return {
-                response,
-                error: new Error(`OpenRouter request failed (${status}): ${detail}`),
-            };
+            // Carry the HTTP status as a structured property, mirroring the SDK's
+            // OpenRouterError hierarchy. The SDK wraps this throw one level deep
+            // (`UnexpectedClientError` with this error as `cause`), and the
+            // harness's transient-failure classifier reads `statusCode` off the
+            // error or one `cause` hop to decide whether a 5xx is worth retrying —
+            // message text alone would defeat it.
+            const err = new Error(`OpenRouter request failed (${status}): ${detail}`);
+            err.statusCode = status;
+            return { response, error: err };
         },
     });
     return hooks;
