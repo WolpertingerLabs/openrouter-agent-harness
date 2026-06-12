@@ -278,6 +278,30 @@ describe('transient-failure retry — retryable classes', () => {
     expect((retryWarnings()[0]!.context as { reason: string }).reason).toBe('wrapped sdk error');
   });
 
+  it('retries an HTTP-level 500 in the afterError-hook wrap shape (incident 2026-06-11)', async () => {
+    // Exact production chain: the server-tools afterError hook builds an
+    // Error with `statusCode` attached, then the SDK's ClientSDK wraps it as
+    // UnexpectedClientError("Unexpected HTTP client error", { cause }). The
+    // classifier must find the 5xx one `cause` hop down.
+    const hookError = Object.assign(
+      new Error('OpenRouter request failed (500): Internal Server Error'),
+      { statusCode: 500 },
+    );
+    callModelMock
+      .mockImplementationOnce(
+        throwingAttempt(new Error('Unexpected HTTP client error', { cause: hookError })),
+      )
+      .mockImplementationOnce(successfulAttempt());
+
+    const events = await collect(makeRun());
+
+    expect(completeOf(events).status).toBe('success');
+    expect(callModelMock).toHaveBeenCalledTimes(2);
+    expect((retryWarnings()[0]!.context as { reason: string }).reason).toBe(
+      'Unexpected HTTP client error',
+    );
+  });
+
   it('retries a follow-up-turn failure with an EMPTY input (fresh items already persisted)', async () => {
     callModelMock
       .mockImplementationOnce(followUpFailureAttempt())
@@ -417,6 +441,14 @@ describe('transient-failure retry — exhaustion and non-retryable classes', () 
     [
       'an HTTP 4xx statusCode error',
       Object.assign(new Error('Bad Request: Status 400'), { statusCode: 400 }),
+    ],
+    [
+      'an HTTP 4xx in the afterError-hook wrap shape (statusCode on the cause)',
+      new Error('Unexpected HTTP client error', {
+        cause: Object.assign(new Error('OpenRouter request failed (400): Bad Request'), {
+          statusCode: 400,
+        }),
+      }),
     ],
     ['a generic Error without statusCode', new Error('boom')],
     ['an Error with a null cause', new Error('boom', { cause: null })],
