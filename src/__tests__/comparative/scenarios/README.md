@@ -73,6 +73,19 @@ Both must be scripted on the Anthropic wire or one of them will 500 the
 emulator and the SDK will retry the loop. The title-gen entry's `response.content`
 just needs to be a JSON title; the contents are never asserted against.
 
+### Hashes are masked against wall-clock drift
+
+The Claude CLI bakes "The current month is \<Month\> \<Year\>" into its
+built-in `WebSearch` tool description, which is part of the hashed request
+body. `canonicalizeRequest` masks that sentence (see `MASKED_CURRENT_MONTH`
+in `../emulator/script-engine.ts`) so recorded hashes survive month
+boundaries. Before the mask existed, every recorded Anthropic-wire hash
+silently expired on 2026-06-01 and the whole emulated PR gate went red. If
+hashes ever drift suite-wide again, suspect a NEW piece of clock- or
+machine-derived text in the request body — diff a fresh
+`DEBUG_COMPARATIVE_HASH=1` dump's `canonical` field against expectations
+before reaching for re-recording.
+
 ## Authoring workflow (manual)
 
 > The fully-automated live→script recorder is deferred to **6.10** (`if-needed`).

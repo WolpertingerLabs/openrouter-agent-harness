@@ -8,7 +8,7 @@
   "script": [
     {
       "wire": "anthropic",
-      "promptHash": "sha256:0b928f4e45b97f0e288d9584c77730fb4b42249a7068982066c313853638755d",
+      "promptHash": "sha256:187a231857a7c1a82cf9a68cc161b40def163633e8e79f45e936aa4be72800ff",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -70,7 +70,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:9cc8ab06b3612403d5641f641d51136cf1cd3b5105860444b00249cbe0fecfa7",
+      "promptHash": "sha256:1371228656dfd214f85eb99ce9a02f6355499f8df55e66648def6480e7378780",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -98,7 +98,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:0f85a314842e446881e6dcaf47510849828a703fed2ce0a113bef8bb24f5c6ac",
+      "promptHash": "sha256:0a7e8369132debf28f952095186bb819e8d8ac8b500d39c166123ba8fed27722",
       "turn": 0,
       "kind": "success",
       "response": {
@@ -126,7 +126,7 @@
     },
     {
       "wire": "openresponses",
-      "promptHash": "sha256:a4ca0777649f71d43a1505cc5495fa2d3107556b3622b6ea048423b765433dd2",
+      "promptHash": "sha256:6382837fc7e353bcd9fa6afe9c26468d7af330b2a902e1c5bdee10cbfccf8418",
       "turn": 0,
       "kind": "success",
       "response": {

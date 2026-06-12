@@ -368,6 +368,14 @@ async function captureAnthropic(
   // on the SDK that ran first and `3,4` on the slower one, breaking parity.
   const tools = buildHarnessTools(scenario.tools ?? []);
   const canUseTool = buildAnthropicCanUseTool(scenario);
+  const deniedToolNames = new Set(
+    (scenario.canUseToolPolicy ?? [])
+      .filter((rule) => rule.action === 'deny')
+      .map((rule) => anthropicToolName(rule.tool)),
+  );
+  const allowedToolNamesAfterPolicy = tools.anthropicAllowedToolNames.filter(
+    (name) => !deniedToolNames.has(name),
+  );
 
   // Phase 6.7: in live mode (`emulatorUrl` undefined) we DON'T override
   // ANTHROPIC_BASE_URL — the SDK hits Anthropic's production endpoint. The
@@ -426,8 +434,18 @@ async function captureAnthropic(
         ...(tools.anthropicMcpServer && {
           mcpServers: { [tools.anthropicMcpServer.name]: tools.anthropicMcpServer },
         }),
-        ...(tools.anthropicAllowedToolNames.length > 0 && {
-          allowedTools: tools.anthropicAllowedToolNames,
+        // Policy-DENIED tools must NOT be allow-listed. An `allowedTools`
+        // entry auto-allows at the CLI's permission layer, so `canUseTool`
+        // is never consulted for it and a `deny` rule silently can't engage
+        // — the tool executes and the "denial" scenarios exercise nothing.
+        // (Latent since the 6.5a recordings; exposed when the OR side's
+        // tool-error signaling started marking denials `isError: true` and
+        // the comparator caught the asymmetry.) Dropping the denied names
+        // routes those calls through `canUseTool` → `behavior: 'deny'`,
+        // which the CLI surfaces as an is_error tool_result — matching the
+        // OR side's denial semantics.
+        ...(allowedToolNamesAfterPolicy.length > 0 && {
+          allowedTools: allowedToolNamesAfterPolicy,
         }),
         ...(canUseTool && { canUseTool }),
       },
