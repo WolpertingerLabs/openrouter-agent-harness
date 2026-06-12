@@ -118,9 +118,13 @@ export interface OpenRouterAgentRunOptions {
     /**
      * Maximum number of automatic retries when a `callModel` cycle dies with a
      * TRANSIENT terminal failure — a `response.failed` SSE event whose error
-     * code is `server_error` / `overloaded`, or an HTTP 5xx error from the SDK.
-     * Deterministic failures (4xx-class errors, moderation blocks, context
-     * overflow) and abort/interrupt paths are never retried.
+     * code is `server_error` / `overloaded`, an HTTP 5xx error from the SDK,
+     * a hung stream ({@link streamStallTimeoutMs}), or an EMPTY completed
+     * response ({@link EmptyModelResponseError}: the final response carried no
+     * text, reasoning, tool calls, or server-tool output — a blank 200 some
+     * providers return instead of a proper error). Deterministic failures
+     * (4xx-class errors, moderation blocks, context overflow) and
+     * abort/interrupt paths are never retried.
      *
      * Each retry re-issues the same cycle with the same fresh input after a
      * short exponential backoff (see {@link transientRetryBaseDelayMs}). This is
@@ -876,5 +880,23 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      */
     private resolveMcpServers;
     private iterate;
+}
+/**
+ * Thrown by the per-cycle empty-response net when a callModel cycle completed
+ * normally (`response.completed` arrived, nothing threw) but its final
+ * response carried no assistant content at all — no output text, no
+ * reasoning, no tool calls, no server-tool items. Providers occasionally
+ * return such a blank 200 instead of a proper error; without this the run
+ * would end `status: 'success'` with nothing to show. Always classified
+ * TRANSIENT by {@link isTransientCycleFailure}, so the bounded retry
+ * machinery re-issues the cycle (with empty input — the SDK persisted the
+ * user items atomically with the empty assistant output, so the retry
+ * continues from stored history). With retries exhausted or disabled
+ * (`maxTransientRetries: 0`) it surfaces like any terminal cycle failure:
+ * `error` + `stream_complete{status:'error'}` — a visible failure beats a
+ * silent empty success.
+ */
+export declare class EmptyModelResponseError extends Error {
+    constructor();
 }
 //# sourceMappingURL=agent.d.ts.map

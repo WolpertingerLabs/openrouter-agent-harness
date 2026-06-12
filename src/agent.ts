@@ -251,9 +251,13 @@ export interface OpenRouterAgentRunOptions {
   /**
    * Maximum number of automatic retries when a `callModel` cycle dies with a
    * TRANSIENT terminal failure — a `response.failed` SSE event whose error
-   * code is `server_error` / `overloaded`, or an HTTP 5xx error from the SDK.
-   * Deterministic failures (4xx-class errors, moderation blocks, context
-   * overflow) and abort/interrupt paths are never retried.
+   * code is `server_error` / `overloaded`, an HTTP 5xx error from the SDK,
+   * a hung stream ({@link streamStallTimeoutMs}), or an EMPTY completed
+   * response ({@link EmptyModelResponseError}: the final response carried no
+   * text, reasoning, tool calls, or server-tool output — a blank 200 some
+   * providers return instead of a proper error). Deterministic failures
+   * (4xx-class errors, moderation blocks, context overflow) and
+   * abort/interrupt paths are never retried.
    *
    * Each retry re-issues the same cycle with the same fresh input after a
    * short exponential backoff (see {@link transientRetryBaseDelayMs}). This is
@@ -2306,6 +2310,25 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         // loop we detect this situation and surface a synthetic error so the
         // consumer always sees `stream_complete{status:"error"}`.
         let responseCompleted = false;
+        // Whether the most recent `response.completed` of this attempt carried
+        // NO assistant content at all (no text, reasoning, tool calls, or
+        // server-tool items). A clean cycle's last completed response is its
+        // final answer — when that answer is empty the model effectively
+        // returned nothing, which the post-loop empty-response net converts
+        // into an {@link EmptyModelResponseError} so the transient retry
+        // machinery can re-issue the cycle instead of reporting a silent
+        // "success" the consumer can't distinguish from a no-op.
+        let lastResponseEmpty = false;
+        // Whether the CURRENT TURN streamed any assistant-visible work: a
+        // non-empty text/reasoning delta, a function_call item, a server-tool
+        // item, or a tool result. Reset on every turn_start so it mirrors
+        // `lastResponseEmpty` (which tracks the last completed response —
+        // i.e. the final turn). Belt-and-braces companion to that flag: the
+        // completed event's `output` echo and the streamed events should
+        // agree, but if a provider/SDK shape ever streams content without
+        // echoing it into the final output, retrying would discard work the
+        // consumer already saw — so streamed activity vetoes the empty net.
+        let sawAssistantActivity = false;
         // Reset the failure capture for this attempt — a stale event from a
         // failed-and-retried predecessor cycle must not poison this attempt's
         // post-loop safety net or the outer catch's reason extraction.
@@ -2337,6 +2360,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
               if (turnNumber > maxTurnNumber) maxTurnNumber = turnNumber;
               lastTurnNumber = turnNumber;
               turnEndEmitted = false;
+              sawAssistantActivity = false;
               yield { type: 'turn_start', turnNumber };
               continue;
             }
@@ -2355,6 +2379,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             if (isToolCallOutputEvent(event)) {
               const out = event.output;
               const isError = detectToolResultIsError(out);
+              sawAssistantActivity = true;
               yield {
                 type: 'tool_result',
                 callId: out.callId,
@@ -2379,6 +2404,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
               if (signal.aborted) continue;
               const delta = (event as { type: string; delta: string }).delta;
               if (delta) {
+                sawAssistantActivity = true;
                 yield { type: 'text_delta', content: delta };
               }
               continue;
@@ -2392,6 +2418,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
               if (signal.aborted) continue;
               const delta = (event as { type: string; delta: string }).delta;
               if (delta) {
+                sawAssistantActivity = true;
                 yield { type: 'reasoning_delta', content: delta };
               }
               continue;
@@ -2438,13 +2465,14 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             // assistant record on disk.
             if ('type' in event && event.type === 'response.completed') {
               responseCompleted = true;
+              const resp = (event as { response?: unknown }).response as {
+                model?: unknown;
+                output?: unknown;
+                usage?: { cost?: unknown } | null;
+              };
+              const extracted = extractAssistantContent(resp.output);
+              lastResponseEmpty = isEmptyAssistantOutput(extracted, resp.output);
               if (persistSession) {
-                const resp = (event as { response?: unknown }).response as {
-                  model?: unknown;
-                  output?: unknown;
-                  usage?: { cost?: unknown } | null;
-                };
-                const extracted = extractAssistantContent(resp.output);
                 const usage = toTranscriptUsage(resp.usage);
                 const cost = typeof resp.usage?.cost === 'number' ? resp.usage.cost : 0;
                 const resolvedModel = typeof resp.model === 'string' ? resp.model : model;
@@ -2480,6 +2508,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
                   input = fnItem.arguments;
                 }
                 toolCallNames.set(fnItem.callId, fnItem.name);
+                sawAssistantActivity = true;
                 yield {
                   type: 'tool_call',
                   callId: fnItem.callId,
@@ -2495,6 +2524,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
                 // record) so consumers can render them alongside client tools
                 // without inventing a synthetic call/result pair.
                 const normalized = normalizeServerToolItem(item);
+                sawAssistantActivity = true;
                 yield {
                   type: 'server_tool',
                   toolType: normalized.toolType,
@@ -2547,6 +2577,30 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
               throw new Error(msg, { cause: err });
+            }
+          }
+          // Empty-response net: the cycle "completed" but its final response
+          // carried no assistant content at all — no text, no reasoning, no
+          // tool calls, no server-tool items. Providers occasionally return
+          // such a blank 200 instead of a proper error; left alone it would
+          // surface as `stream_complete{status:'success'}` with literally
+          // nothing for the consumer to show. Throwing here hands it to the
+          // catch arm below, where {@link isTransientCycleFailure} classifies
+          // it transient and the bounded retry re-issues the cycle. An
+          // interrupt legitimately truncates output mid-turn, so the SDK's
+          // persisted `status: 'interrupted'` is consulted first and wins
+          // (the post-cycle interrupt path handles that case). Only fires
+          // when `response.completed` was actually seen — a stream that
+          // closed without one is the silent-hang anomaly handled above,
+          // whose persistence semantics are ambiguous enough that a retry
+          // could duplicate the user items in state. Streamed assistant
+          // activity (deltas, tool calls, server-tool items) vetoes the net
+          // even when the completed output echo looks empty — retrying would
+          // discard work the consumer already saw.
+          if (responseCompleted && lastResponseEmpty && !sawAssistantActivity && !signal.aborted) {
+            const stateNow = await this.stateAccessor.load();
+            if ((stateNow as { status?: string } | null)?.status !== 'interrupted') {
+              throw new EmptyModelResponseError();
             }
           }
         } catch (err) {
@@ -3288,6 +3342,30 @@ function namedFromPositional(
  */
 const TRANSIENT_FAILURE_CODES: ReadonlySet<string> = new Set(['server_error', 'overloaded']);
 
+/**
+ * Thrown by the per-cycle empty-response net when a callModel cycle completed
+ * normally (`response.completed` arrived, nothing threw) but its final
+ * response carried no assistant content at all — no output text, no
+ * reasoning, no tool calls, no server-tool items. Providers occasionally
+ * return such a blank 200 instead of a proper error; without this the run
+ * would end `status: 'success'` with nothing to show. Always classified
+ * TRANSIENT by {@link isTransientCycleFailure}, so the bounded retry
+ * machinery re-issues the cycle (with empty input — the SDK persisted the
+ * user items atomically with the empty assistant output, so the retry
+ * continues from stored history). With retries exhausted or disabled
+ * (`maxTransientRetries: 0`) it surfaces like any terminal cycle failure:
+ * `error` + `stream_complete{status:'error'}` — a visible failure beats a
+ * silent empty success.
+ */
+export class EmptyModelResponseError extends Error {
+  constructor() {
+    super(
+      'Model returned an empty response (no text, reasoning, tool calls, or server-tool output)',
+    );
+    this.name = 'EmptyModelResponseError';
+  }
+}
+
 /** Read a numeric `statusCode` property off an arbitrary value, if present. */
 function statusCodeAt(value: unknown): number | undefined {
   if (typeof value !== 'object' || value === null) return undefined;
@@ -3312,7 +3390,10 @@ function extractStatusCode(err: unknown): number | undefined {
  * transient — a dead connection is exactly the class of failure a fresh
  * cycle attempt heals — and is checked first because a stall says nothing
  * about any `response.failed` event that may have been captured earlier in
- * the same attempt. Otherwise: when a `response.failed` event was captured
+ * the same attempt. An {@link EmptyModelResponseError} (cycle completed but
+ * the final response carried no assistant content) is likewise always
+ * transient — a blank 200 is a provider hiccup a re-issued cycle heals.
+ * Otherwise: when a `response.failed` event was captured
  * for the attempt, its structured `response.error.code` is authoritative —
  * the SDK's own rethrow of the same failure is a `JSON.stringify` of that
  * envelope, so falling through to the thrown error would just re-parse
@@ -3325,6 +3406,7 @@ function extractStatusCode(err: unknown): number | undefined {
  */
 function isTransientCycleFailure(failedEvent: unknown, err: unknown): boolean {
   if (err instanceof StreamStallError) return true;
+  if (err instanceof EmptyModelResponseError) return true;
   if (failedEvent !== null) {
     const code = (failedEvent as { response?: { error?: { code?: unknown } | null } | null })
       .response?.error?.code;
@@ -3596,6 +3678,30 @@ function extractAssistantContent(output: unknown): {
   if (reasoning.length > 0) result.reasoning = reasoning;
   if (toolCalls.length > 0) result.toolCalls = toolCalls;
   return result;
+}
+
+/**
+ * True when a completed response's `output` holds no assistant content at
+ * all: {@link extractAssistantContent} found no text, reasoning, or tool
+ * calls, AND no OpenRouter server-tool item is present (those live outside
+ * the shapes extractAssistantContent reads but still represent the model
+ * having done something). `extracted` must be the result of
+ * `extractAssistantContent(output)` — passed in rather than recomputed
+ * because the `response.completed` handler already needs it for the
+ * transcript record. A missing/non-array `output` counts as empty.
+ */
+function isEmptyAssistantOutput(
+  extracted: { text?: string; reasoning?: string; toolCalls?: TranscriptToolCall[] },
+  output: unknown,
+): boolean {
+  if (
+    extracted.text !== undefined ||
+    extracted.reasoning !== undefined ||
+    extracted.toolCalls !== undefined
+  ) {
+    return false;
+  }
+  return !(Array.isArray(output) && output.some(isServerToolOutputItem));
 }
 
 /**

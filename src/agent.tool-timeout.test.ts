@@ -266,7 +266,14 @@ describe('toolTimeoutMs — per-tool execute deadline', () => {
         yield {
           type: 'response.completed',
           sequenceNumber: 2,
-          response: { id: 'r', model: 'm', output: [], usage: { cost: 0 } },
+          // Non-empty output: this cycle runs no tools, so a blank completed
+          // response would trip the empty-response net and retry the cycle.
+          response: {
+            id: 'r',
+            model: 'm',
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+            usage: { cost: 0 },
+          },
         };
         yield { type: 'turn.end', turnNumber: 1, timestamp: 2 };
       },

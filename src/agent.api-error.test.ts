@@ -254,7 +254,16 @@ describe('API error propagation — Fix 2 (defense-in-depth: silent stream + get
       cancel: async () => undefined,
       async *getFullResponsesStream() {
         yield { type: 'turn.start', turnNumber: 0, timestamp: 1 };
-        yield { type: 'response.completed', response: { model: 'm', output: [], usage: null } };
+        yield {
+          type: 'response.completed',
+          // Non-empty output: a blank completed response would trip the
+          // empty-response net, whose retry path calls getResponse() too.
+          response: {
+            model: 'm',
+            output: [{ type: 'message', content: [{ type: 'output_text', text: 'ok' }] }],
+            usage: null,
+          },
+        };
         yield { type: 'turn.end', turnNumber: 0, timestamp: 2 };
       },
       getResponse: getResponseSpy,
