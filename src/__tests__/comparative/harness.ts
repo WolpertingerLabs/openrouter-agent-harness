@@ -42,6 +42,7 @@
 //   round-trip is not. See PR-body ambiguity call #7.
 
 import { mkdir, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { query, type CanUseTool as AnthropicCanUseTool } from '@anthropic-ai/claude-agent-sdk';
@@ -390,10 +391,22 @@ async function captureAnthropic(
         }
       : {};
 
+  // The Claude Agent SDK files each session under `~/.claude/projects/<cwd>`,
+  // keyed by the subprocess working directory. Left at the default
+  // (`process.cwd()` = the repo root), every comparative scenario would show
+  // up in the developer's local Claude Code chat list for THIS project. Point
+  // the subprocess at a throwaway dir under the OS temp root so those test
+  // sessions land in a `/tmp`-keyed bucket instead, off the active chat list.
+  // (`settingSources: []` already isolates settings; this isolates session
+  // bookkeeping the same way.)
+  const anthropicCwd = join(tmpdir(), 'comparative-anthropic-cwd');
+  await mkdir(anthropicCwd, { recursive: true });
+
   try {
     const q = query({
       prompt: scenario.prompt,
       options: {
+        cwd: anthropicCwd,
         env: {
           ...sanitizeParentEnvForClaudeSubprocess(process.env),
           ...envOverrides,
