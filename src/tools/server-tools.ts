@@ -1,10 +1,26 @@
 import { SDKHooks } from '@openrouter/sdk/hooks/hooks';
 import type { AfterErrorContext, BeforeCreateRequestContext } from '@openrouter/sdk/hooks/types';
 
-export const SERVER_TOOLS = [
-  { type: 'openrouter:datetime' as const },
-  { type: 'openrouter:web_search' as const },
-  { type: 'openrouter:web_fetch' as const },
+/**
+ * A single OpenRouter server-side tool entry, exactly as it appears in the
+ * request body's `tools` array. The only required field is the `openrouter:*`
+ * `type` discriminator; any additional provider/tool options ride alongside it
+ * verbatim — e.g. `web_search`'s `engine` and `max_results`, or `web_fetch`
+ * limits. The harness does not validate or reshape these; it forwards whatever
+ * the caller supplies straight to OpenRouter.
+ */
+export type ServerToolConfig = { type: string } & Record<string, unknown>;
+
+/**
+ * Server tools injected when the caller supplies no {@link ServerToolConfig}
+ * override: OpenRouter's datetime, web-search, and web-fetch built-ins, each
+ * with their default parameters. Callers pass their own array to customize
+ * options or narrow the set; an empty array disables injection entirely.
+ */
+export const DEFAULT_SERVER_TOOLS: readonly ServerToolConfig[] = [
+  { type: 'openrouter:datetime' },
+  { type: 'openrouter:web_search' },
+  { type: 'openrouter:web_fetch' },
 ];
 
 // Re-export the pure server-tool *output item* helpers from their SDK-free
@@ -44,7 +60,9 @@ function formatErrorMetadata(metadata: unknown): string {
   return parts.join(', ');
 }
 
-export function createServerToolsHooks(): SDKHooks {
+export function createServerToolsHooks(
+  serverTools: readonly ServerToolConfig[] = DEFAULT_SERVER_TOOLS,
+): SDKHooks {
   const hooks = new SDKHooks();
   hooks.registerBeforeCreateRequestHook({
     beforeCreateRequest(
@@ -56,9 +74,9 @@ export function createServerToolsHooks(): SDKHooks {
       try {
         const body = JSON.parse(input.options.body);
         if (Array.isArray(body.tools)) {
-          body.tools.push(...SERVER_TOOLS);
+          body.tools.push(...serverTools);
         } else {
-          body.tools = [...SERVER_TOOLS];
+          body.tools = [...serverTools];
         }
         return { ...input, options: { ...input.options, body: JSON.stringify(body) } };
       } catch {

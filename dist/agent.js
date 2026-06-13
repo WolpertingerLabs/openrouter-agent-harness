@@ -6,7 +6,7 @@ import { StreamStallError, createStallMonitor, monitorStream } from './stall.js'
 import { allTools } from './tools/index.js';
 import { createSkillLoader, } from './skills/index.js';
 import { DEFAULT_SKILL_DESCRIPTION_BUDGET, buildSkillListing, } from './tools/skill.js';
-import { createServerToolsHooks } from './tools/server-tools.js';
+import { createServerToolsHooks, DEFAULT_SERVER_TOOLS, } from './tools/server-tools.js';
 import { isServerToolOutputItem, normalizeServerToolItem } from './tools/server-tool-items.js';
 import { createFileStateAccessor } from './state/file-state.js';
 import { createMemoryStateAccessor } from './state/memory-state.js';
@@ -145,7 +145,8 @@ function resolveOptions(opts) {
         ...(opts.disallowedTools !== undefined && { disallowedTools: opts.disallowedTools }),
         ...(opts.effort !== undefined && { effort: opts.effort }),
         ...(opts.cacheControl !== undefined && { cacheControl: opts.cacheControl }),
-        ...(opts.disableServerTools !== undefined && { disableServerTools: opts.disableServerTools }),
+        ...(opts.serverTools !== undefined && { serverTools: opts.serverTools }),
+        ...(opts.modelParams !== undefined && { modelParams: opts.modelParams }),
         ...(opts.compactionThreshold !== undefined && {
             compactionThreshold: opts.compactionThreshold,
         }),
@@ -362,11 +363,15 @@ export class OpenRouterAgentRun {
      * because it may be called outside an active iteration.
      */
     createOpenRouterClient() {
+        // Omitted → default trio; explicit `[]` → no hook at all (the body rewrite
+        // itself, not just the tools it adds, is what invalidates OR's cacheControl
+        // path, so an empty-but-registered hook would defeat the caching opt-out).
+        const serverTools = this.opts.serverTools ?? DEFAULT_SERVER_TOOLS;
         return new OpenRouter({
             apiKey: this.opts.apiKey,
             ...(this.opts.baseUrl && { serverURL: this.opts.baseUrl }),
             appTitle: this.opts.appTitle,
-            ...(this.opts.disableServerTools !== true && { hooks: createServerToolsHooks() }),
+            ...(serverTools.length > 0 && { hooks: createServerToolsHooks(serverTools) }),
         });
     }
     /**
@@ -447,6 +452,9 @@ export class OpenRouterAgentRun {
         const client = this.createOpenRouterClient();
         const compactSessionId = `${this.opts.sessionId}:compact:${randomUUID()}`;
         const result = client.callModel({
+            // Same passthrough as the main cycle; spread first so the structural
+            // fields and `cacheControl` below win on conflict.
+            ...this.opts.modelParams,
             model: this.opts.model,
             sessionId: compactSessionId,
             input: JSON.stringify(summarize),
@@ -887,7 +895,7 @@ export class OpenRouterAgentRun {
                 const childDisallowedTools = config.disallowedTools ?? this.opts.disallowedTools;
                 const childEffort = config.effort ?? this.opts.effort;
                 const childCacheControl = config.cacheControl ?? this.opts.cacheControl;
-                const childDisableServerTools = config.disableServerTools ?? this.opts.disableServerTools;
+                const childServerTools = config.serverTools ?? this.opts.serverTools;
                 const child = new OpenRouterAgentRun({
                     apiKey,
                     sessionId: config.sessionId,
@@ -908,6 +916,7 @@ export class OpenRouterAgentRun {
                     ...(this.opts.modelContextWindows !== undefined && {
                         modelContextWindows: this.opts.modelContextWindows,
                     }),
+                    ...(this.opts.modelParams !== undefined && { modelParams: this.opts.modelParams }),
                     ...(this.opts.tokenCounter !== undefined && { tokenCounter: this.opts.tokenCounter }),
                     appTitle,
                     logsRoot,
@@ -923,8 +932,8 @@ export class OpenRouterAgentRun {
                     ...(childDisallowedTools !== undefined && { disallowedTools: childDisallowedTools }),
                     ...(childEffort !== undefined && { effort: childEffort }),
                     ...(childCacheControl !== undefined && { cacheControl: childCacheControl }),
-                    ...(childDisableServerTools !== undefined && {
-                        disableServerTools: childDisableServerTools,
+                    ...(childServerTools !== undefined && {
+                        serverTools: childServerTools,
                     }),
                 });
                 let text = '';
@@ -1301,6 +1310,11 @@ export class OpenRouterAgentRun {
                 //    shared across cycles so the SDK's resume path picks up the
                 //    accumulated `messages` history automatically.
                 const result = client.callModel({
+                    // Caller-supplied passthrough (sampling params, `provider`, OR
+                    // `plugins` like pareto's `minCodingScore`). Spread FIRST so every
+                    // structural field below — model/input/tools/state/stopWhen/include —
+                    // and the effort/cacheControl options win on key conflict.
+                    ...this.opts.modelParams,
                     model,
                     sessionId,
                     input: cycleInput,

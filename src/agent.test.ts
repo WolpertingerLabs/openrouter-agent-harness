@@ -40,7 +40,7 @@ vi.mock('@openrouter/agent', async (importOriginal) => {
 });
 
 vi.mock('./tools/server-tools.js', () => ({
-  SERVER_TOOLS: [],
+  DEFAULT_SERVER_TOOLS: [],
   createServerToolsHooks: () => ({}),
 }));
 
@@ -1870,6 +1870,75 @@ describe('OpenRouterAgentRun constructor options', () => {
     await collect(run);
     const ctorArgs = openRouterCtorMock.mock.calls[0][0];
     expect('serverURL' in ctorArgs).toBe(false);
+  });
+});
+
+describe('OpenRouterAgentRun modelParams passthrough', () => {
+  const simpleTurn = () =>
+    fakeCallModel({
+      events: [
+        { type: 'turn.start', turnNumber: 0 },
+        { type: 'turn.end', turnNumber: 0 },
+      ],
+    });
+
+  it('forwards sampling modelParams into the callModel request body', async () => {
+    callModelMock.mockImplementation(simpleTurn());
+    // camelCase field names — the SDK's Zod schema strips unknown keys and
+    // remaps camelCase → snake_case on the wire (topP → top_p).
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+      modelParams: { temperature: 0.2, topP: 0.9 },
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.temperature).toBe(0.2);
+    expect(args.topP).toBe(0.9);
+  });
+
+  it('forwards the pareto-router minCodingScore plugin via modelParams.plugins', async () => {
+    callModelMock.mockImplementation(simpleTurn());
+    const plugins = [{ id: 'pareto-router' as const, minCodingScore: 0.5 }];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+      modelParams: { plugins },
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.plugins).toStrictEqual(plugins);
+  });
+
+  it('omits all passthrough fields when modelParams is unset', async () => {
+    callModelMock.mockImplementation(simpleTurn());
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect('plugins' in args).toBe(false);
+    expect('temperature' in args).toBe(false);
+  });
+
+  it('never lets modelParams clobber harness-set structural fields', async () => {
+    callModelMock.mockImplementation(simpleTurn());
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+      model: 'real-model',
+      // Hostile params that try to overwrite fields the harness owns.
+      modelParams: { model: 'hijacked', tools: [], input: 'nope' },
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.model).toBe('real-model');
+    expect(args.input).not.toBe('nope');
   });
 });
 

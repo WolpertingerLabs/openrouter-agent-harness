@@ -1,6 +1,7 @@
 import { type Tool } from '@openrouter/agent';
-import type { AnthropicCacheControlDirective } from '@openrouter/sdk/models';
+import type { AnthropicCacheControlDirective, ResponsesRequest } from '@openrouter/sdk/models';
 import { type SkillLoader } from './skills/index.js';
+import { type ServerToolConfig } from './tools/server-tools.js';
 import type { OnAskUserQuestion } from './tools/ask-user-question.js';
 import type { OnTasksChanged } from './tools/tasks.js';
 import type { AgentCoreEvent, HookEvent, HookPayload, PreToolUseAction } from './events.js';
@@ -457,23 +458,60 @@ export interface OpenRouterAgentRunOptions {
      */
     cacheControl?: AnthropicCacheControlDirective;
     /**
-     * When `true`, skip OpenRouter's built-in server-side tool injection
-     * (`openrouter:datetime`, `openrouter:web_search`, `openrouter:web_fetch`).
-     * Default `false` — server tools remain active, preserving prior behavior.
+     * OpenRouter server-side tools to inject into every request body (the main
+     * cycle AND the compaction pass). Each entry is forwarded verbatim, so any
+     * valid per-tool configuration the caller wants rides along — e.g.
+     * `{ type: 'openrouter:web_search', engine: 'exa', max_results: 5 }` or a
+     * `web_fetch` with custom limits.
      *
-     * Why this exists: empirically, the presence of those three server tools
-     * in the request body disables OR's `cacheControl` auto-prompt-caching on
-     * Anthropic models when combined with user-defined tools (the cache-key
-     * path OR uses to forward to Anthropic appears to be invalidated by the
-     * server-tools rewrite). Setting this to `true` keeps the request's
-     * `tools` array exactly as built by the agent, restoring caching at the
-     * cost of losing OR's server-side datetime/web access.
+     * - **Omitted** → the three {@link DEFAULT_SERVER_TOOLS} (datetime,
+     *   web_search, web_fetch) with default parameters, preserving prior behavior.
+     * - **`[]`** → no server tools, and the body-rewriting hook is not registered
+     *   at all. Use this when OR's `cacheControl` auto-prompt-caching must stay
+     *   intact: empirically the server-tools rewrite invalidates the cache-key
+     *   path OR uses to forward to Anthropic when user-defined tools are present.
+     * - **Custom array** → exactly those tools, replacing the defaults.
      *
-     * Inherited by spawned subagents unless the spawn config overrides.
-     * Applies to both the main run client and the compaction client (which
-     * share `createOpenRouterClient`).
+     * Inherited by spawned subagents unless the spawn config overrides. Applies
+     * to both the main run client and the compaction client (which share
+     * `createOpenRouterClient`).
      */
-    disableServerTools?: boolean;
+    serverTools?: readonly ServerToolConfig[];
+    /**
+     * Extra OpenRouter request-body parameters, shallow-merged into every
+     * `callModel` request body (the main cycle AND the compaction pass), and
+     * inherited verbatim by spawned subagents. This is the escape hatch for
+     * model/provider knobs the harness does not surface a dedicated option for —
+     * sampling (`temperature`, `topP`, `topK`, `frequencyPenalty`,
+     * `presencePenalty`, `maxOutputTokens`), `provider` routing preferences, and
+     * OR `plugins`.
+     *
+     * Typed as `Partial<ResponsesRequest>` deliberately: `callModel` runs the
+     * request through the SDK's Zod schema, which (a) STRIPS any key not declared
+     * on `ResponsesRequest` and (b) expects **camelCase** field names, remapping
+     * them to snake_case on the wire (`topP` → `top_p`). An untyped bag would let
+     * snake_case or misspelled keys be silently dropped — the `Partial` type
+     * catches that at compile time.
+     *
+     * The canonical plugin example is selecting a coding tier on
+     * `openrouter/pareto` via the `pareto-router` plugin's `minCodingScore` (0–1,
+     * higher → stronger but pricier model; omitted → the router's High tier):
+     *
+     * ```ts
+     * modelParams: {
+     *   temperature: 0.2,
+     *   plugins: [{ id: 'pareto-router', minCodingScore: 0.5 }],
+     * }
+     * ```
+     *
+     * Merge semantics: these keys are spread FIRST, so any field the harness sets
+     * structurally — `model`, `input`, `instructions`, `tools`, `state`,
+     * `stopWhen`, `include`, `onTurnEnd`, and the {@link effort}/{@link cacheControl}
+     * options — always wins on conflict. Use {@link effort}/{@link cacheControl}
+     * for reasoning depth and prompt caching rather than re-specifying them here.
+     * Omitted runs send no extra fields, preserving default behavior.
+     */
+    modelParams?: Partial<ResponsesRequest>;
     /**
      * Phase 5.1: threshold that triggers an auto-compaction pass once the
      * persisted `ConversationState.messages` array crosses it.

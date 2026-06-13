@@ -23,7 +23,9 @@ vi.mock('@openrouter/agent', async (importOriginal) => {
 });
 
 vi.mock('../../tools/server-tools.js', () => ({
-  SERVER_TOOLS: [],
+  // Non-empty so the default (no `serverTools`) path registers the hook — the
+  // default-on assertion below gates on hook presence.
+  DEFAULT_SERVER_TOOLS: [{ type: 'openrouter:datetime' }],
   createServerToolsHooks: () => ({}),
 }));
 
@@ -1015,7 +1017,7 @@ describe('integration: spawn_subagent via OpenRouterAgentRun', () => {
     expect('cacheControl' in childArgs).toBe(false);
   });
 
-  it('spawned subagent inherits parent `disableServerTools: true` — both OR ctors omit `hooks`', async () => {
+  it('spawned subagent inherits parent `serverTools: []` — both OR ctors omit `hooks`', async () => {
     state.fixtureQueue = [
       parentFixtureCallingSubagent({ description: 'inherit server-tools opt-out' }),
       childFixtureSimpleText(),
@@ -1027,7 +1029,7 @@ describe('integration: spawn_subagent via OpenRouterAgentRun', () => {
       prompt: 'parent opts out, child inherits',
       enableSubagents: true,
       persistSession: false,
-      disableServerTools: true,
+      serverTools: [],
     });
 
     for await (const _ of parent) void _;
@@ -1039,7 +1041,7 @@ describe('integration: spawn_subagent via OpenRouterAgentRun', () => {
     expect('hooks' in childCtor).toBe(false);
   });
 
-  it('parent omits `disableServerTools` → both OR ctors receive `hooks` (default-on)', async () => {
+  it('parent omits `serverTools` → both OR ctors receive `hooks` (default-on)', async () => {
     state.fixtureQueue = [
       parentFixtureCallingSubagent({ description: 'default server tools' }),
       childFixtureSimpleText(),

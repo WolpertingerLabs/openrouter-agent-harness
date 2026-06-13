@@ -10,7 +10,7 @@ import {
   type StateAccessor,
   type ConversationState,
 } from '@openrouter/agent';
-import type { AnthropicCacheControlDirective } from '@openrouter/sdk/models';
+import type { AnthropicCacheControlDirective, ResponsesRequest } from '@openrouter/sdk/models';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
@@ -34,7 +34,11 @@ import {
   buildSkillListing,
   type ActiveSkillContext,
 } from './tools/skill.js';
-import { createServerToolsHooks } from './tools/server-tools.js';
+import {
+  createServerToolsHooks,
+  DEFAULT_SERVER_TOOLS,
+  type ServerToolConfig,
+} from './tools/server-tools.js';
 import { isServerToolOutputItem, normalizeServerToolItem } from './tools/server-tool-items.js';
 import { type ToolContext } from './tools/context.js';
 import type { OnAskUserQuestion } from './tools/ask-user-question.js';
@@ -590,23 +594,60 @@ export interface OpenRouterAgentRunOptions {
    */
   cacheControl?: AnthropicCacheControlDirective;
   /**
-   * When `true`, skip OpenRouter's built-in server-side tool injection
-   * (`openrouter:datetime`, `openrouter:web_search`, `openrouter:web_fetch`).
-   * Default `false` — server tools remain active, preserving prior behavior.
+   * OpenRouter server-side tools to inject into every request body (the main
+   * cycle AND the compaction pass). Each entry is forwarded verbatim, so any
+   * valid per-tool configuration the caller wants rides along — e.g.
+   * `{ type: 'openrouter:web_search', engine: 'exa', max_results: 5 }` or a
+   * `web_fetch` with custom limits.
    *
-   * Why this exists: empirically, the presence of those three server tools
-   * in the request body disables OR's `cacheControl` auto-prompt-caching on
-   * Anthropic models when combined with user-defined tools (the cache-key
-   * path OR uses to forward to Anthropic appears to be invalidated by the
-   * server-tools rewrite). Setting this to `true` keeps the request's
-   * `tools` array exactly as built by the agent, restoring caching at the
-   * cost of losing OR's server-side datetime/web access.
+   * - **Omitted** → the three {@link DEFAULT_SERVER_TOOLS} (datetime,
+   *   web_search, web_fetch) with default parameters, preserving prior behavior.
+   * - **`[]`** → no server tools, and the body-rewriting hook is not registered
+   *   at all. Use this when OR's `cacheControl` auto-prompt-caching must stay
+   *   intact: empirically the server-tools rewrite invalidates the cache-key
+   *   path OR uses to forward to Anthropic when user-defined tools are present.
+   * - **Custom array** → exactly those tools, replacing the defaults.
    *
-   * Inherited by spawned subagents unless the spawn config overrides.
-   * Applies to both the main run client and the compaction client (which
-   * share `createOpenRouterClient`).
+   * Inherited by spawned subagents unless the spawn config overrides. Applies
+   * to both the main run client and the compaction client (which share
+   * `createOpenRouterClient`).
    */
-  disableServerTools?: boolean;
+  serverTools?: readonly ServerToolConfig[];
+  /**
+   * Extra OpenRouter request-body parameters, shallow-merged into every
+   * `callModel` request body (the main cycle AND the compaction pass), and
+   * inherited verbatim by spawned subagents. This is the escape hatch for
+   * model/provider knobs the harness does not surface a dedicated option for —
+   * sampling (`temperature`, `topP`, `topK`, `frequencyPenalty`,
+   * `presencePenalty`, `maxOutputTokens`), `provider` routing preferences, and
+   * OR `plugins`.
+   *
+   * Typed as `Partial<ResponsesRequest>` deliberately: `callModel` runs the
+   * request through the SDK's Zod schema, which (a) STRIPS any key not declared
+   * on `ResponsesRequest` and (b) expects **camelCase** field names, remapping
+   * them to snake_case on the wire (`topP` → `top_p`). An untyped bag would let
+   * snake_case or misspelled keys be silently dropped — the `Partial` type
+   * catches that at compile time.
+   *
+   * The canonical plugin example is selecting a coding tier on
+   * `openrouter/pareto` via the `pareto-router` plugin's `minCodingScore` (0–1,
+   * higher → stronger but pricier model; omitted → the router's High tier):
+   *
+   * ```ts
+   * modelParams: {
+   *   temperature: 0.2,
+   *   plugins: [{ id: 'pareto-router', minCodingScore: 0.5 }],
+   * }
+   * ```
+   *
+   * Merge semantics: these keys are spread FIRST, so any field the harness sets
+   * structurally — `model`, `input`, `instructions`, `tools`, `state`,
+   * `stopWhen`, `include`, `onTurnEnd`, and the {@link effort}/{@link cacheControl}
+   * options — always wins on conflict. Use {@link effort}/{@link cacheControl}
+   * for reasoning depth and prompt caching rather than re-specifying them here.
+   * Omitted runs send no extra fields, preserving default behavior.
+   */
+  modelParams?: Partial<ResponsesRequest>;
   /**
    * Phase 5.1: threshold that triggers an auto-compaction pass once the
    * persisted `ConversationState.messages` array crosses it.
@@ -873,13 +914,22 @@ interface ResolvedOptions {
    */
   cacheControl?: AnthropicCacheControlDirective;
   /**
-   * Resolved per-run opt-out of OR's built-in server-side tool hook. When
-   * `true`, `createOpenRouterClient` omits the `hooks` entry that injects
-   * `openrouter:datetime` / `openrouter:web_search` / `openrouter:web_fetch`
-   * into every request body. Inherited by spawned subagents when their spec
-   * omits an override. Mirrors the {@link cacheControl} resolution shape.
+   * Resolved per-run server-tool list. When omitted, `createOpenRouterClient`
+   * falls back to {@link DEFAULT_SERVER_TOOLS}; an empty array suppresses the
+   * injection hook entirely (preserving OR's `cacheControl` auto-caching).
+   * Forwarded verbatim into `createServerToolsHooks`, and inherited by spawned
+   * subagents when their spec omits an override. Mirrors the
+   * {@link cacheControl} resolution shape.
    */
-  disableServerTools?: boolean;
+  serverTools?: readonly ServerToolConfig[];
+  /**
+   * Resolved per-run extra request-body passthrough (`Partial<ResponsesRequest>`:
+   * sampling params, `provider`, OR `plugins`, …). Shallow-merged into the main
+   * and compaction `callModel` request bodies (harness-set fields win on
+   * conflict; see the input-option JSDoc), and inherited by spawned subagents
+   * verbatim. Thin passthrough — no defaulting, no shape munging.
+   */
+  modelParams?: Partial<ResponsesRequest>;
   /**
    * Phase 5.1: explicit caller-supplied threshold (chars — or TOKENS when
    * {@link tokenCounter} is set). `undefined` → derived from {@link model}.
@@ -1003,7 +1053,8 @@ function resolveOptions(opts: OpenRouterAgentRunOptions): ResolvedOptions {
     ...(opts.disallowedTools !== undefined && { disallowedTools: opts.disallowedTools }),
     ...(opts.effort !== undefined && { effort: opts.effort }),
     ...(opts.cacheControl !== undefined && { cacheControl: opts.cacheControl }),
-    ...(opts.disableServerTools !== undefined && { disableServerTools: opts.disableServerTools }),
+    ...(opts.serverTools !== undefined && { serverTools: opts.serverTools }),
+    ...(opts.modelParams !== undefined && { modelParams: opts.modelParams }),
     ...(opts.compactionThreshold !== undefined && {
       compactionThreshold: opts.compactionThreshold,
     }),
@@ -1235,11 +1286,15 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
    * because it may be called outside an active iteration.
    */
   private createOpenRouterClient(): OpenRouter {
+    // Omitted → default trio; explicit `[]` → no hook at all (the body rewrite
+    // itself, not just the tools it adds, is what invalidates OR's cacheControl
+    // path, so an empty-but-registered hook would defeat the caching opt-out).
+    const serverTools = this.opts.serverTools ?? DEFAULT_SERVER_TOOLS;
     return new OpenRouter({
       apiKey: this.opts.apiKey,
       ...(this.opts.baseUrl && { serverURL: this.opts.baseUrl }),
       appTitle: this.opts.appTitle,
-      ...(this.opts.disableServerTools !== true && { hooks: createServerToolsHooks() }),
+      ...(serverTools.length > 0 && { hooks: createServerToolsHooks(serverTools) }),
     } as ConstructorParameters<typeof OpenRouter>[0]);
   }
 
@@ -1321,6 +1376,9 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     const client = this.createOpenRouterClient();
     const compactSessionId = `${this.opts.sessionId}:compact:${randomUUID()}`;
     const result = client.callModel({
+      // Same passthrough as the main cycle; spread first so the structural
+      // fields and `cacheControl` below win on conflict.
+      ...this.opts.modelParams,
       model: this.opts.model,
       sessionId: compactSessionId,
       input: JSON.stringify(summarize),
@@ -1813,7 +1871,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         const childDisallowedTools = config.disallowedTools ?? this.opts.disallowedTools;
         const childEffort = config.effort ?? this.opts.effort;
         const childCacheControl = config.cacheControl ?? this.opts.cacheControl;
-        const childDisableServerTools = config.disableServerTools ?? this.opts.disableServerTools;
+        const childServerTools = config.serverTools ?? this.opts.serverTools;
         const child = new OpenRouterAgentRun({
           apiKey,
           sessionId: config.sessionId,
@@ -1834,6 +1892,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           ...(this.opts.modelContextWindows !== undefined && {
             modelContextWindows: this.opts.modelContextWindows,
           }),
+          ...(this.opts.modelParams !== undefined && { modelParams: this.opts.modelParams }),
           ...(this.opts.tokenCounter !== undefined && { tokenCounter: this.opts.tokenCounter }),
           appTitle,
           logsRoot,
@@ -1849,8 +1908,8 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           ...(childDisallowedTools !== undefined && { disallowedTools: childDisallowedTools }),
           ...(childEffort !== undefined && { effort: childEffort }),
           ...(childCacheControl !== undefined && { cacheControl: childCacheControl }),
-          ...(childDisableServerTools !== undefined && {
-            disableServerTools: childDisableServerTools,
+          ...(childServerTools !== undefined && {
+            serverTools: childServerTools,
           }),
         });
         let text = '';
@@ -2242,6 +2301,11 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         //    shared across cycles so the SDK's resume path picks up the
         //    accumulated `messages` history automatically.
         const result = client.callModel({
+          // Caller-supplied passthrough (sampling params, `provider`, OR
+          // `plugins` like pareto's `minCodingScore`). Spread FIRST so every
+          // structural field below — model/input/tools/state/stopWhen/include —
+          // and the effort/cacheControl options win on key conflict.
+          ...this.opts.modelParams,
           model,
           sessionId,
           input: cycleInput,

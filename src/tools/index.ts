@@ -107,7 +107,11 @@ export type {
   TaskCreateToolResult,
   TaskUpdateToolResult,
 } from './tasks.js';
-export { SERVER_TOOLS, createServerToolsHooks } from './server-tools.js';
+export {
+  DEFAULT_SERVER_TOOLS,
+  createServerToolsHooks,
+  type ServerToolConfig,
+} from './server-tools.js';
 export {
   isServerToolOutputItem,
   normalizeServerToolItem,

@@ -35,7 +35,7 @@ vi.mock('@openrouter/agent', async (importOriginal) => {
 });
 
 vi.mock('./tools/server-tools.js', () => ({
-  SERVER_TOOLS: [],
+  DEFAULT_SERVER_TOOLS: [],
   createServerToolsHooks: () => ({}),
 }));
 
