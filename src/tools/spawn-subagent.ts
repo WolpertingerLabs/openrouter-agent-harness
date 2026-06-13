@@ -12,6 +12,7 @@ import type {
 import type { PermissionMode } from '../permission-modes.js';
 import type { EffortLevel } from '../agent.js';
 import type { AnthropicCacheControlDirective } from '@openrouter/sdk/models';
+import type { ServerToolConfig } from './server-tools.js';
 
 /**
  * Phase 5.4: tuple of accepted effort enum values. Defined here so the Zod
@@ -89,11 +90,11 @@ export interface SubagentRunConfig {
    */
   cacheControl?: AnthropicCacheControlDirective;
   /**
-   * Pass-through to {@link OpenRouterAgentRunOptions.disableServerTools}.
-   * When `true`, the child skips OR's built-in `openrouter:*` server-tool
-   * hook. Omit to inherit the parent's value.
+   * Pass-through to {@link OpenRouterAgentRunOptions.serverTools}. Each entry
+   * is forwarded verbatim into the child's request bodies; `[]` suppresses
+   * server-tool injection. Omit to inherit the parent's value.
    */
-  disableServerTools?: boolean;
+  serverTools?: readonly ServerToolConfig[];
   /** Composite abort signal that fires when either the parent or the subagent itself aborts. */
   signal: AbortSignal;
   /** Chain depth of the new subagent (root = 0, first subagent = 1, …). */

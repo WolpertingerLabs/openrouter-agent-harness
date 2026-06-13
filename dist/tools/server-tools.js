@@ -1,5 +1,11 @@
 import { SDKHooks } from '@openrouter/sdk/hooks/hooks';
-export const SERVER_TOOLS = [
+/**
+ * Server tools injected when the caller supplies no {@link ServerToolConfig}
+ * override: OpenRouter's datetime, web-search, and web-fetch built-ins, each
+ * with their default parameters. Callers pass their own array to customize
+ * options or narrow the set; an empty array disables injection entirely.
+ */
+export const DEFAULT_SERVER_TOOLS = [
     { type: 'openrouter:datetime' },
     { type: 'openrouter:web_search' },
     { type: 'openrouter:web_fetch' },
@@ -36,7 +42,7 @@ function formatErrorMetadata(metadata) {
     }
     return parts.join(', ');
 }
-export function createServerToolsHooks() {
+export function createServerToolsHooks(serverTools = DEFAULT_SERVER_TOOLS) {
     const hooks = new SDKHooks();
     hooks.registerBeforeCreateRequestHook({
         beforeCreateRequest(_context, input) {
@@ -45,10 +51,10 @@ export function createServerToolsHooks() {
             try {
                 const body = JSON.parse(input.options.body);
                 if (Array.isArray(body.tools)) {
-                    body.tools.push(...SERVER_TOOLS);
+                    body.tools.push(...serverTools);
                 }
                 else {
-                    body.tools = [...SERVER_TOOLS];
+                    body.tools = [...serverTools];
                 }
                 return { ...input, options: { ...input.options, body: JSON.stringify(body) } };
             }

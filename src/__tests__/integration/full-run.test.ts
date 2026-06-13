@@ -26,7 +26,9 @@ vi.mock('@openrouter/agent', async (importOriginal) => {
 // Server-tool hooks would otherwise reach for an OpenRouter client at module
 // load; stub them so the mocked OR module is the only path exercised here.
 vi.mock('../../tools/server-tools.js', () => ({
-  SERVER_TOOLS: [],
+  // Non-empty so the default (no `serverTools`) path resolves to a non-empty
+  // list and registers the hook — the assertions below gate on hook presence.
+  DEFAULT_SERVER_TOOLS: [{ type: 'openrouter:datetime' }],
   createServerToolsHooks: () => ({}),
 }));
 
@@ -1006,7 +1008,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect(callArgs.cacheControl).toEqual({ type: 'ephemeral', ttl: '5m' });
   });
 
-  it('default (no `disableServerTools`) → OR ctor receives `hooks` (server tools active)', async () => {
+  it('default (no `serverTools`) → OR ctor receives `hooks` (server tools active)', async () => {
     state.fixture = loadFixture('single-turn-no-usage');
     const run = new OpenRouterAgentRun({
       apiKey: 'sk-int-test',
@@ -1023,7 +1025,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect('hooks' in ctorArgs).toBe(true);
   });
 
-  it('`disableServerTools: true` → OR ctor receives NO `hooks` key (server tools suppressed)', async () => {
+  it('`serverTools: []` → OR ctor receives NO `hooks` key (server tools suppressed)', async () => {
     state.fixture = loadFixture('single-turn-no-usage');
     const run = new OpenRouterAgentRun({
       apiKey: 'sk-int-test',
@@ -1032,7 +1034,7 @@ describe('integration: full run via OpenRouterAgentRun', () => {
       tools: [echoTool()] as unknown as ConstructorParameters<
         typeof OpenRouterAgentRun
       >[0]['tools'],
-      disableServerTools: true,
+      serverTools: [],
     });
     await collect(run);
 
@@ -1042,16 +1044,16 @@ describe('integration: full run via OpenRouterAgentRun', () => {
     expect('hooks' in ctorArgs).toBe(false);
   });
 
-  it('`disableServerTools: false` (explicit) → OR ctor receives `hooks` (server tools active)', async () => {
+  it('custom `serverTools` → OR ctor receives `hooks` (server tools active)', async () => {
     state.fixture = loadFixture('single-turn-no-usage');
     const run = new OpenRouterAgentRun({
       apiKey: 'sk-int-test',
       sessionId: TEST_SESSION,
-      prompt: 'server tools explicitly on',
+      prompt: 'server tools customized',
       tools: [echoTool()] as unknown as ConstructorParameters<
         typeof OpenRouterAgentRun
       >[0]['tools'],
-      disableServerTools: false,
+      serverTools: [{ type: 'openrouter:web_search', engine: 'exa' }],
     });
     await collect(run);
 

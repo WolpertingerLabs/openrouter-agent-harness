@@ -1,7 +1,7 @@
 /**
  * Regression tests for the silent-hang bug where an OpenRouter API error
  * (e.g. a 402 "insufficient credits") causes the agent run to hang forever
- * when server tools are enabled (disableServerTools: false).
+ * when server tools are enabled (the default).
  *
  * Root cause: the SDK's default afterError hook returns {response, error:null}
  * on non-2xx responses, which in certain code paths inside ModelResult causes
@@ -17,7 +17,7 @@
  * was observed AND the signal is not aborted, await result.getResponse() in a
  * try/catch and surface any rejection as an error.
  *
- * Both modes (disableServerTools: true and false) must yield
+ * Both modes (serverTools: [] and the default) must yield
  * stream_complete{status:"error"} with the API error message in `reason`.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -64,7 +64,7 @@ vi.mock('@openrouter/agent', async (importOriginal) => {
 // server tools are on, mirroring production.
 // ---------------------------------------------------------------------------
 vi.mock('./tools/server-tools.js', () => ({
-  SERVER_TOOLS: [
+  DEFAULT_SERVER_TOOLS: [
     { type: 'openrouter:datetime' },
     { type: 'openrouter:web_search' },
     { type: 'openrouter:web_fetch' },
@@ -136,13 +136,15 @@ async function collectEvents(run: OpenRouterAgentRun): Promise<AgentCoreEvent[]>
   return events;
 }
 
-function makeRun(overrides: { disableServerTools?: boolean } = {}): OpenRouterAgentRun {
+type ServerToolsOverride = ConstructorParameters<typeof OpenRouterAgentRun>[0]['serverTools'];
+
+function makeRun(overrides: { serverTools?: ServerToolsOverride } = {}): OpenRouterAgentRun {
   return new OpenRouterAgentRun({
     apiKey: 'sk-test',
     sessionId: `sess-api-error-${Date.now()}`,
     prompt: 'hi',
     persistSession: false,
-    disableServerTools: overrides.disableServerTools,
+    serverTools: overrides.serverTools,
   });
 }
 
@@ -160,9 +162,9 @@ describe('API error propagation — Fix 1 (afterError hook throws)', () => {
     'OpenRouter request failed (402): This request requires more credits, or fewer max_tokens. ' +
     'You requested up to 65536 tokens, but can only afford 62298.';
 
-  it('yields stream_complete{status:"error"} when disableServerTools: true', async () => {
+  it('yields stream_complete{status:"error"} when serverTools: []', async () => {
     callModelMock.mockImplementation(makeThrowingCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: true }));
+    const events = await collectEvents(makeRun({ serverTools: [] }));
 
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.type).toBe('stream_complete');
@@ -170,9 +172,9 @@ describe('API error propagation — Fix 1 (afterError hook throws)', () => {
     expect(complete.reason).toContain('can only afford 62298');
   });
 
-  it('yields stream_complete{status:"error"} when disableServerTools: false', async () => {
+  it('yields stream_complete{status:"error"} with default server tools', async () => {
     callModelMock.mockImplementation(makeThrowingCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: false }));
+    const events = await collectEvents(makeRun());
 
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.type).toBe('stream_complete');
@@ -182,7 +184,7 @@ describe('API error propagation — Fix 1 (afterError hook throws)', () => {
 
   it('yields an error event before stream_complete', async () => {
     callModelMock.mockImplementation(makeThrowingCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: false }));
+    const events = await collectEvents(makeRun());
 
     const errorEvent = events.find(
       (e): e is Extract<AgentCoreEvent, { type: 'error' }> => e.type === 'error',
@@ -193,7 +195,7 @@ describe('API error propagation — Fix 1 (afterError hook throws)', () => {
 
   it('always yields session_started before the error event', async () => {
     callModelMock.mockImplementation(makeThrowingCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: false }));
+    const events = await collectEvents(makeRun());
 
     const types = events.map((e) => e.type);
     expect(types[0]).toBe('session_started');
@@ -207,12 +209,12 @@ describe('API error propagation — Fix 2 (defense-in-depth: silent stream + get
     'OpenRouter request failed (402): This request requires more credits, or fewer max_tokens. ' +
     'You requested up to 65536 tokens, but can only afford 62298.';
 
-  it('yields stream_complete{status:"error"} when disableServerTools: false and stream exits silently', async () => {
+  it('yields stream_complete{status:"error"} with default server tools and stream exits silently', async () => {
     // This is the exact pre-fix hang scenario:
     // - getFullResponsesStream() exits with no events (no throw)
     // - getResponse() rejects with the real API error
     callModelMock.mockImplementation(makeSilentStreamCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: false }));
+    const events = await collectEvents(makeRun());
 
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.type).toBe('stream_complete');
@@ -220,9 +222,9 @@ describe('API error propagation — Fix 2 (defense-in-depth: silent stream + get
     expect(complete.reason).toContain('can only afford 62298');
   });
 
-  it('yields stream_complete{status:"error"} when disableServerTools: true and stream exits silently', async () => {
+  it('yields stream_complete{status:"error"} when serverTools: [] and stream exits silently', async () => {
     callModelMock.mockImplementation(makeSilentStreamCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: true }));
+    const events = await collectEvents(makeRun({ serverTools: [] }));
 
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.type).toBe('stream_complete');
@@ -232,7 +234,7 @@ describe('API error propagation — Fix 2 (defense-in-depth: silent stream + get
 
   it('yields an error event before stream_complete in the silent-stream path', async () => {
     callModelMock.mockImplementation(makeSilentStreamCallModel(apiErrorMsg));
-    const events = await collectEvents(makeRun({ disableServerTools: false }));
+    const events = await collectEvents(makeRun());
 
     const errorEvent = events.find(
       (e): e is Extract<AgentCoreEvent, { type: 'error' }> => e.type === 'error',
@@ -269,7 +271,7 @@ describe('API error propagation — Fix 2 (defense-in-depth: silent stream + get
       getResponse: getResponseSpy,
     }));
 
-    const events = await collectEvents(makeRun({ disableServerTools: false }));
+    const events = await collectEvents(makeRun());
 
     const complete = events.at(-1) as Extract<AgentCoreEvent, { type: 'stream_complete' }>;
     expect(complete.status).toBe('success');
@@ -312,7 +314,7 @@ describe('HTTP-level error detail extraction', () => {
       sessionId: `sess-http-detail-${Date.now()}`,
       prompt: 'hi',
       persistSession: false,
-      disableServerTools: true,
+      serverTools: [],
       logger: (_level, message, fields) => {
         if (message === 'OpenRouterAgentRun stream errored') captured = fields;
       },
@@ -357,7 +359,7 @@ describe('HTTP-level error detail extraction', () => {
       sessionId: `sess-http-detail-cause-${Date.now()}`,
       prompt: 'hi',
       persistSession: false,
-      disableServerTools: true,
+      serverTools: [],
     });
     const events = await collectEvents(run);
     expect(errorEventOf(events).detail).toEqual({ statusCode: 502, body: 'bad gateway body' });

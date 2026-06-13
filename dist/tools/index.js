@@ -27,7 +27,7 @@ export { monitorTool } from './monitor.js';
 export { spawnSubagentTool, spawnSubagentsTool, DEFAULT_MAX_SUBAGENT_DEPTH, DEFAULT_MAX_PARALLEL_SUBAGENTS, MAX_PARALLEL_BATCH_SIZE, SPAWN_SUBAGENT_INPUT_SCHEMA, } from './spawn-subagent.js';
 export { toolSearchTool, toolLoadTool, MAX_SCHEMA_PREVIEW_CHARS, SCHEMA_PREVIEW_TRUNCATION_MARKER, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_LIMIT, scoreMatch, tokenize, searchCatalog, buildSchemaPreview, } from './tool-search.js';
 export { skillTool, splitAllowedTools, buildSkillListing, DEFAULT_SKILL_DESCRIPTION_BUDGET, } from './skill.js';
-export { SERVER_TOOLS, createServerToolsHooks } from './server-tools.js';
+export { DEFAULT_SERVER_TOOLS, createServerToolsHooks, } from './server-tools.js';
 export { isServerToolOutputItem, normalizeServerToolItem, } from './server-tool-items.js';
 export { DEFAULT_TOOL_CONTEXT } from './context.js';
 /**
