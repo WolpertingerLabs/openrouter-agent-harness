@@ -3,6 +3,8 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   isPseudoModel,
   resolveRoute,
+  resolveRouteCached,
+  createRouteCache,
   type RouterPlugin,
   type RoutingContext,
   type RouteDecision,
@@ -91,6 +93,7 @@ describe('resolveRoute', () => {
       reason: 'code task',
       routerName: 'coding-router',
       fellBack: false,
+      sticky: true,
     });
   });
 
@@ -129,6 +132,7 @@ describe('resolveRoute', () => {
       resolvedModel: 'openai/gpt-4o-mini',
       routerName: 'looper',
       fellBack: true,
+      sticky: false,
     });
     expect(logger).toHaveBeenCalledWith(
       'warn',
@@ -153,6 +157,7 @@ describe('resolveRoute', () => {
       resolvedModel: 'openai/gpt-4o-mini',
       routerName: 'thrower',
       fellBack: true,
+      sticky: false,
     });
     expect(logger).toHaveBeenCalledWith(
       'warn',
@@ -205,5 +210,134 @@ describe('resolveRoute', () => {
     ];
     const res = await resolveRoute('auto/coding', makeCtx(), routers);
     expect(res?.fellBack).toBe(true);
+  });
+
+  it('defaults sticky to true and honours an explicit sticky flag', async () => {
+    const sticky = await resolveRoute(
+      'auto/coding',
+      makeCtx(),
+      [staticRouter('r', { model: 'm' }, { provides: ['auto/coding'] })],
+    );
+    expect(sticky?.sticky).toBe(true);
+
+    const nonSticky = await resolveRoute(
+      'auto/coding',
+      makeCtx(),
+      [staticRouter('r', { model: 'm', sticky: false }, { provides: ['auto/coding'] })],
+    );
+    expect(nonSticky?.sticky).toBe(false);
+  });
+});
+
+describe('resolveRouteCached', () => {
+  /** A router that returns a fresh model each call so we can detect re-routing. */
+  function countingRouter(
+    decision: Omit<RouteDecision, 'model'> = {},
+  ): { router: RouterPlugin; calls: () => number } {
+    let n = 0;
+    const router: RouterPlugin = {
+      name: 'counter',
+      provides: ['auto/coding'],
+      route: () => {
+        n += 1;
+        return { model: `model-${n}`, ...decision };
+      },
+    };
+    return { router, calls: () => n };
+  }
+
+  it('returns null (and caches nothing) when no router claims the model', async () => {
+    const cache = createRouteCache();
+    const routers = [staticRouter('r', { model: 'x' }, { provides: ['auto/coding'] })];
+    const res = await resolveRouteCached('openai/gpt-4o', makeCtx(), routers, cache);
+    expect(res).toBeNull();
+    expect(cache.size).toBe(0);
+  });
+
+  it('pins the first sticky decision and reuses it without re-routing', async () => {
+    const cache = createRouteCache();
+    const { router, calls } = countingRouter();
+
+    const first = await resolveRouteCached('auto/coding', makeCtx({ turn: 0 }), [router], cache);
+    const second = await resolveRouteCached('auto/coding', makeCtx({ turn: 1 }), [router], cache);
+
+    expect(first?.resolvedModel).toBe('model-1');
+    expect(second?.resolvedModel).toBe('model-1');
+    expect(calls()).toBe(1);
+    expect(cache.size).toBe(1);
+  });
+
+  it('re-decides every turn when the decision is sticky:false', async () => {
+    const cache = createRouteCache();
+    const { router, calls } = countingRouter({ sticky: false });
+
+    const first = await resolveRouteCached('auto/coding', makeCtx({ turn: 0 }), [router], cache);
+    const second = await resolveRouteCached('auto/coding', makeCtx({ turn: 1 }), [router], cache);
+
+    expect(first?.resolvedModel).toBe('model-1');
+    expect(second?.resolvedModel).toBe('model-2');
+    expect(calls()).toBe(2);
+    expect(cache.size).toBe(0);
+  });
+
+  it('caches the turn and compaction phases independently', async () => {
+    const cache = createRouteCache();
+    const { router, calls } = countingRouter();
+
+    const turn = await resolveRouteCached('auto/coding', makeCtx({ phase: 'turn' }), [router], cache);
+    const comp = await resolveRouteCached(
+      'auto/coding',
+      makeCtx({ phase: 'compaction' }),
+      [router],
+      cache,
+    );
+
+    expect(turn?.resolvedModel).toBe('model-1');
+    expect(comp?.resolvedModel).toBe('model-2');
+    expect(calls()).toBe(2);
+    expect(cache.size).toBe(2);
+  });
+
+  it('does not cache fallbacks — re-routes after a transient throw', async () => {
+    const cache = createRouteCache();
+    let n = 0;
+    const router: RouterPlugin = {
+      name: 'flaky',
+      provides: ['auto/coding'],
+      route: () => {
+        n += 1;
+        if (n === 1) throw new Error('transient');
+        return { model: 'recovered' };
+      },
+    };
+
+    const first = await resolveRouteCached('auto/coding', makeCtx(), [router], cache);
+    expect(first?.fellBack).toBe(true);
+    expect(cache.size).toBe(0);
+
+    const second = await resolveRouteCached('auto/coding', makeCtx(), [router], cache);
+    expect(second?.resolvedModel).toBe('recovered');
+    expect(second?.fellBack).toBe(false);
+    expect(cache.size).toBe(1);
+  });
+
+  it('forwards the logger to the underlying resolveRoute', async () => {
+    const cache = createRouteCache();
+    const logger = vi.fn();
+    const routers: RouterPlugin[] = [
+      {
+        name: 'thrower',
+        provides: ['auto/coding'],
+        route: () => {
+          throw new Error('kaboom');
+        },
+      },
+    ];
+    await resolveRouteCached('auto/coding', makeCtx(), routers, cache, logger);
+    expect(logger).toHaveBeenCalledWith(
+      'warn',
+      expect.stringContaining('threw while routing'),
+      expect.objectContaining({ error: 'kaboom' }),
+    );
   });
 });
