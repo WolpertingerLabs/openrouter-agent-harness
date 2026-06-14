@@ -112,6 +112,15 @@ export type AgentCoreEvent =
     };
 
 /**
+ * The `router_decision` variant of {@link AgentCoreEvent}, extracted as a
+ * standalone named type for consumers that handle pseudomodel routing
+ * decisions directly (e.g. rendering the per-turn resolved model). Emitted
+ * once per resolution — see the variant's doc comment in {@link AgentCoreEvent}
+ * for the turn/compaction timing and `fellBack` semantics.
+ */
+export type RouterDecisionEvent = Extract<AgentCoreEvent, { type: 'router_decision' }>;
+
+/**
  * Lifecycle hook event names fired by an {@link OpenRouterAgentRun}. Hooks are
  * audit-only — their return value cannot mutate the run, and exceptions thrown
  * inside a hook are logged and swallowed so they cannot break the agent.

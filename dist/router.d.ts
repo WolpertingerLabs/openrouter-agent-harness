@@ -14,8 +14,10 @@
  * `plugins`, a router can influence the model call.
  *
  * Step 1 of `plans/autorouter-pseudomodels.md` defines the type surface; step 2
- * adds the pure resolution engine ({@link resolveRoute}, {@link isPseudoModel}).
- * Lifecycle wiring, stickiness, and the canonical factories land in later steps.
+ * adds the pure resolution engine ({@link resolveRoute}, {@link isPseudoModel});
+ * step 4 adds the per-run stickiness cache ({@link createRouteCache},
+ * {@link resolveRouteCached}). Lifecycle wiring and the canonical factories land
+ * in later steps.
  */
 import type { AgentLogger } from './agent.js';
 /**
@@ -106,6 +108,14 @@ export interface RouteResolution {
      * is the fail-safe default rather than the router's choice.
      */
     fellBack: boolean;
+    /**
+     * Whether this resolution should be cached for the run (see
+     * {@link resolveRouteCached}). Mirrors {@link RouteDecision.sticky} — `true`
+     * by default, `false` when the router opted out. Fallbacks
+     * ({@link RouteResolution.fellBack}) are never sticky: a transient failure
+     * should be re-decided next turn rather than pinned for the whole run.
+     */
+    sticky: boolean;
 }
 /**
  * Whether `model` is a pseudomodel — i.e. some router in `routers` claims it.
@@ -128,4 +138,43 @@ export declare function isPseudoModel(model: string, routers: ReadonlyArray<Rout
  * separate concern layered on top in a later step.
  */
 export declare function resolveRoute(model: string, ctx: RoutingContext, routers: ReadonlyArray<RouterPlugin>, logger?: AgentLogger): Promise<RouteResolution | null>;
+/**
+ * Per-run cache of routing decisions, keyed by `(pseudoModel, phase)`.
+ *
+ * Stickiness protects the upstream prompt cache and keeps cost predictable: the
+ * first decision for a pseudomodel is pinned for the run and reused on later
+ * turns instead of re-routing each turn. The key includes `phase` so the
+ * `'turn'` and `'compaction'` passes route independently (a run can pin a cheap
+ * summarizer for compaction while the main turn rides a different model).
+ *
+ * Create one per run; never share across runs.
+ */
+export type RouteCache = Map<string, RouteResolution>;
+/** Construct an empty {@link RouteCache} for a single run. */
+export declare function createRouteCache(): RouteCache;
+/**
+ * Build the cache key for a `(pseudoModel, phase)` pair. The NUL separator can't
+ * appear in a model ID or phase, so distinct pairs never collide.
+ *
+ * Exported so a caller can probe {@link RouteCache.has} BEFORE
+ * {@link resolveRouteCached} to tell a fresh resolution (cache miss) from a
+ * reused sticky decision (cache hit) — the agent loop emits a `router_decision`
+ * event only on the cycle that actually routes, not when a pinned sticky
+ * decision is replayed.
+ */
+export declare function routeCacheKey(pseudoModel: string, phase: RoutingContext['phase']): string;
+/**
+ * Stickiness-aware wrapper over {@link resolveRoute}: returns a cached decision
+ * for this `(pseudoModel, phase)` if one was pinned earlier in the run,
+ * otherwise resolves fresh and caches the result when it is sticky.
+ *
+ * Semantics (see `plans/autorouter-pseudomodels.md` § Resolution semantics):
+ * - A cache hit short-circuits routing entirely — `route()` is not called again,
+ *   so the pinned model survives across turns regardless of changing context.
+ * - A miss resolves via {@link resolveRoute}; the result is cached only when
+ *   {@link RouteResolution.sticky} is `true`. `sticky: false` decisions and
+ *   fallbacks re-decide every turn.
+ * - `null` (no router claims `model`) is never cached.
+ */
+export declare function resolveRouteCached(model: string, ctx: RoutingContext, routers: ReadonlyArray<RouterPlugin>, cache: RouteCache, logger?: AgentLogger): Promise<RouteResolution | null>;
 //# sourceMappingURL=router.d.ts.map

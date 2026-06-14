@@ -16,4 +16,7 @@ export { createSkillLoader, loadSkills, parseSkillFile, parseYamlFrontmatter, no
 export { skillTool, splitAllowedTools, buildSkillListing, DEFAULT_SKILL_DESCRIPTION_BUDGET, } from './tools/skill.js';
 export { createCommandLoader, parseCommandFile, COMMAND_NAMESPACE_SEPARATOR, } from './commands/index.js';
 export { loadPlugins, pluginManifestSchema, PLUGIN_NAME_REGEX, PLUGIN_DEFAULT_PATHS, PLUGIN_MCP_NAMESPACE_SEPARATOR, } from './plugins/index.js';
+export { isPseudoModel } from './router.js';
+export { createRuleRouter } from './routers/rule.js';
+export { createClassifierRouter } from './routers/classifier.js';
 //# sourceMappingURL=index.js.map

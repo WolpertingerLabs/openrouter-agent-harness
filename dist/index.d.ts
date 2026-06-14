@@ -36,4 +36,11 @@ export { createCommandLoader, parseCommandFile, COMMAND_NAMESPACE_SEPARATOR, } f
 export type { CommandInfo, CommandFrontmatter, CommandSource, CommandLoader, CommandLoaderOptions, ResolveContext as CommandResolveContext, ResolvedCommand, } from './commands/index.js';
 export { loadPlugins, pluginManifestSchema, PLUGIN_NAME_REGEX, PLUGIN_DEFAULT_PATHS, PLUGIN_MCP_NAMESPACE_SEPARATOR, } from './plugins/index.js';
 export type { PluginManifest, LoadedPlugin, PluginHookConfig, LoadPluginsOptions, } from './plugins/index.js';
+export { isPseudoModel } from './router.js';
+export type { RouterPlugin, RoutingContext, RouteDecision, RouterInitContext, } from './router.js';
+export type { RouterDecisionEvent } from './events.js';
+export { createRuleRouter } from './routers/rule.js';
+export type { RuleRouterRule, RuleRouterOptions } from './routers/rule.js';
+export { createClassifierRouter } from './routers/classifier.js';
+export type { ClassifierClient, ClassifierRouterOptions } from './routers/classifier.js';
 //# sourceMappingURL=index.d.ts.map

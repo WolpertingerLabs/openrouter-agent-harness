@@ -232,3 +232,15 @@ export type {
   PluginHookConfig,
   LoadPluginsOptions,
 } from './plugins/index.js';
+export { isPseudoModel } from './router.js';
+export type {
+  RouterPlugin,
+  RoutingContext,
+  RouteDecision,
+  RouterInitContext,
+} from './router.js';
+export type { RouterDecisionEvent } from './events.js';
+export { createRuleRouter } from './routers/rule.js';
+export type { RuleRouterRule, RuleRouterOptions } from './routers/rule.js';
+export { createClassifierRouter } from './routers/classifier.js';
+export type { ClassifierClient, ClassifierRouterOptions } from './routers/classifier.js';

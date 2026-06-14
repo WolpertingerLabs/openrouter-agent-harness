@@ -11,7 +11,7 @@ import { type AgentMessage } from './messages.js';
 import { type ForkSessionResult } from './session-fork.js';
 import { type McpServerConfig } from './mcp/config.js';
 import type { LoadedPlugin } from './plugins/index.js';
-import type { RouterPlugin } from './router.js';
+import { type RouterPlugin } from './router.js';
 import { type UserInput } from './streaming-input.js';
 /**
  * Default system instructions for the built-in code-editing agent. Exported so
@@ -710,6 +710,26 @@ export interface OpenRouterAgentRunOptions {
     routers?: readonly RouterPlugin[];
 }
 /**
+ * The concrete model (plus any per-route param overrides) the compaction pass
+ * should run against, as returned by
+ * {@link OpenRouterAgentRun.resolveCompactionModel}. Passed from the
+ * auto-compaction trigger into {@link OpenRouterAgentRun.compact} so the
+ * compaction route is consulted exactly once per run.
+ */
+interface ResolvedCompactionModel {
+    model: string;
+    modelParams?: Record<string, unknown>;
+    /**
+     * The `router_decision` event for this compaction resolution, present only
+     * when the run's `model` was a pseudomodel that a router claimed. The
+     * auto-compaction trigger yields this from {@link OpenRouterAgentRun.iterate}'s
+     * `finally` so consumers observe which model compaction routed to.
+     */
+    decision?: Extract<AgentCoreEvent, {
+        type: 'router_decision';
+    }>;
+}
+/**
  * Single-shot async iterable that drives an OpenRouter agent turn-by-turn and
  * yields normalized {@link AgentCoreEvent}s. One instance per query. Construct,
  * `for await` the events, done.
@@ -817,6 +837,21 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      */
     private safeFireHook;
     /**
+     * Resolve the concrete model the compaction pass should run against. When the
+     * run's `model` is a pseudomodel (some configured router claims it), run the
+     * resolution engine with `phase: 'compaction'` so the summarizer can ride a
+     * different (e.g. cheaper) model than the main turn — and, critically, so the
+     * context-window math in {@link isOverCompactionThreshold} sizes against the
+     * RESOLVED real model rather than silently falling to the 128k default.
+     * Otherwise the run's `model` passes through verbatim.
+     *
+     * Resolves fresh (no stickiness cache): compaction fires at most once per run
+     * boundary, so there is nothing to amortize, and the per-turn route cache is
+     * scoped to {@link iterate}. Routing is fail-safe inside the engine, so this
+     * never throws — a router failure falls back to {@link DEFAULT_MODEL}.
+     */
+    private resolveCompactionModel;
+    /**
      * Phase 5.1: condense the older portion of this run's persisted message
      * history into a single `developer`-role summary message, replacing the
      * prefix on disk. Loads {@link ConversationState} via the run's
@@ -852,7 +887,7 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      * leaves the original state untouched and re-throws so the caller can
      * decide how to recover.
      */
-    compact(reason?: 'auto' | 'manual'): Promise<void>;
+    compact(reason?: 'auto' | 'manual', preResolved?: ResolvedCompactionModel): Promise<void>;
     /**
      * Decide whether the persisted message history has crossed the
      * auto-compaction threshold. Two accounting modes share one serialization
@@ -862,14 +897,18 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      * - **Token mode** — when {@link OpenRouterAgentRunOptions.tokenCounter}
      *   is set, the counter's output is compared against a TOKEN threshold:
      *   `compactionThreshold` verbatim when configured (reinterpreted as
-     *   tokens), else `floor(getModelContextWindow(model, modelContextWindows)
-     *   * DEFAULT_THRESHOLD_RATIO)`. A throwing counter logs a `'warn'` and
-     *   falls through to char mode for this check — a tokenizer bug must
-     *   never kill a run that was otherwise healthy.
+     *   tokens), else `floor(getModelContextWindow(windowModel,
+     *   modelContextWindows) * DEFAULT_THRESHOLD_RATIO)`. A throwing counter logs
+     *   a `'warn'` and falls through to char mode for this check — a tokenizer
+     *   bug must never kill a run that was otherwise healthy.
      * - **Char mode** (default) — serialized length vs.
      *   {@link resolveCompactionThresholdChars} (the v1 chars/4 heuristic),
      *   with the same per-run {@link OpenRouterAgentRunOptions.modelContextWindows}
      *   overrides applied to the window lookup.
+     *
+     * `windowModel` is the RESOLVED concrete model (see
+     * {@link resolveCompactionModel}); the window lookup must key on a real model,
+     * not a pseudomodel that would silently fall to the 128k default.
      */
     private isOverCompactionThreshold;
     /**
@@ -951,4 +990,5 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
 export declare class EmptyModelResponseError extends Error {
     constructor();
 }
+export {};
 //# sourceMappingURL=agent.d.ts.map
