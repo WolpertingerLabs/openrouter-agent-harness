@@ -14,6 +14,7 @@ import type { AnthropicCacheControlDirective, ResponsesRequest } from '@openrout
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import {
+  CHARS_PER_TOKEN,
   COMPACTION_PROMPT,
   DEFAULT_KEEP_RECENT_TURNS,
   partitionMessages,
@@ -85,7 +86,13 @@ import {
 import { McpBridge, MCP_TOOL_NAME_SEPARATOR } from './mcp/bridge.js';
 import { loadMcpConfig, type McpServerConfig } from './mcp/config.js';
 import type { LoadedPlugin } from './plugins/index.js';
-import type { RouterPlugin } from './router.js';
+import {
+  createRouteCache,
+  isPseudoModel,
+  resolveRouteCached,
+  type RouterPlugin,
+  type RoutingContext,
+} from './router.js';
 import {
   StreamingInputSource,
   commitPartialResponse,
@@ -2281,10 +2288,23 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         input: ReturnType<typeof userInputToCallModelItem>[];
       } | null = null;
 
+      // Router (autorouter / pseudomodel) state, scoped to this run. The cache
+      // pins each `(pseudoModel, phase)` decision so a sticky route survives
+      // across cycles (protects the upstream prompt cache + keeps cost
+      // predictable); `previousModel` carries the concrete model that ran last
+      // cycle into the next `RoutingContext` so a router can stay sticky on its
+      // own terms; `cycleIndex` is the 0-based cycle counter surfaced as
+      // `RoutingContext.turn` (a retry re-runs the same cycle, so it does NOT
+      // advance the index). Empty/unused when no router claims the run's model.
+      const routeCache = createRouteCache();
+      let previousModel: string | undefined;
+      let cycleIndex = -1;
+
       while (true) {
         let cycleRequestId: string;
         let cycleInput: ReturnType<typeof userInputToCallModelItem>[];
         if (retryState === null) {
+          cycleIndex += 1;
           // 1. Pull the next user input. Drains the imperative
           //    pushUserMessage() queue first (FIFO), then the constructor
           //    AsyncIterable<UserInput> if one was supplied. Done when both
@@ -2344,6 +2364,51 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           cycleInput = retryState.input;
         }
 
+        // 3b. Resolve the model just before dispatch. When the run's `model` is
+        //     a pseudomodel (some configured router claims it), run the
+        //     stickiness-aware resolution engine to substitute a concrete model
+        //     and merge any per-route `modelParams`; otherwise the model passes
+        //     through verbatim. Routing failures are fail-safe inside the engine
+        //     (they fall back to a real default and never throw), so this block
+        //     can never crash a cycle. `previousModel` is recorded for the next
+        //     cycle's `RoutingContext` regardless of whether routing fired.
+        let requestModel = model;
+        let routedParams: Record<string, unknown> | undefined;
+        if (isPseudoModel(model, this.opts.routers)) {
+          const persisted = await this.stateAccessor.load();
+          const rawMessages = (persisted as { messages?: unknown } | null)?.messages;
+          const stateMessages = Array.isArray(rawMessages) ? rawMessages : [];
+          const serialized = serializeMessagesForEstimate(stateMessages);
+          const routingCtx: RoutingContext = {
+            pseudoModel: model,
+            // Fail-safe fallback must be a real model — the run's own `model` is
+            // the pseudomodel here, so use the harness default.
+            defaultModel: DEFAULT_MODEL,
+            sessionId,
+            turn: cycleIndex,
+            phase: 'turn',
+            messages: stateMessages,
+            input: cycleInput,
+            instructions,
+            tools: toolsForRun.map((t) => (isClientTool(t) ? t.function.name : t.config.type)),
+            estimatedTokens: Math.ceil(serialized.length / CHARS_PER_TOKEN),
+            budgetRemainingUsd: Math.max(0, maxBudgetUsd - totalCostUsd),
+            ...(previousModel !== undefined && { previousModel }),
+          };
+          const resolution = await resolveRouteCached(
+            model,
+            routingCtx,
+            this.opts.routers,
+            routeCache,
+            logger,
+          );
+          if (resolution) {
+            requestModel = resolution.resolvedModel;
+            routedParams = resolution.modelParams;
+          }
+        }
+        previousModel = requestModel;
+
         // 4. Fire the callModel for this cycle. The state accessor is
         //    shared across cycles so the SDK's resume path picks up the
         //    accumulated `messages` history automatically.
@@ -2351,9 +2416,12 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           // Caller-supplied passthrough (sampling params, `provider`, OR
           // `plugins` like pareto's `minCodingScore`). Spread FIRST so every
           // structural field below — model/input/tools/state/stopWhen/include —
-          // and the effort/cacheControl options win on key conflict.
+          // and the effort/cacheControl options win on key conflict. Per-route
+          // `modelParams` from a router layer over the run-level passthrough
+          // (route wins) but still below the structural fields.
           ...this.opts.modelParams,
-          model,
+          ...routedParams,
+          model: requestModel,
           sessionId,
           input: cycleInput,
           instructions,
