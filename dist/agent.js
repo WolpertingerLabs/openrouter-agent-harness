@@ -164,6 +164,7 @@ function resolveOptions(opts) {
         disableSkillShellExecution: opts.disableSkillShellExecution ?? false,
         skillEnv: opts.skillEnv ?? {},
         plugins,
+        routers: opts.routers ?? [],
     };
 }
 /**
@@ -728,6 +729,12 @@ export class OpenRouterAgentRun {
         // plugins are configured (the closure short-circuits via the
         // `skill.pluginName` truthy check).
         const pluginByName = new Map(this.opts.plugins.map((p) => [p.manifest.name, p]));
+        // Routers (autorouters / pseudomodels): every router that reaches the init
+        // phase below is recorded here so the outer `finally` can fire its paired
+        // `dispose` exactly once. Empty when no routers are configured, or when the
+        // run aborts at construction before the init loop runs (no lifecycle to
+        // bracket — mirrors the `pluginStartTimes` skip semantics).
+        const initializedRouters = [];
         // Thin forwarder around the class-level safeFireHook so the existing
         // closures in this generator (subagent lifecycle emitters,
         // wrapToolWithHooks plumbing, etc.) keep their original call signature.
@@ -1009,6 +1016,30 @@ export class OpenRouterAgentRun {
                         hooks: plugin.hookConfigs.length,
                     },
                 });
+            }
+            // Routers: warm up each router AFTER PluginStart and BEFORE the first
+            // `callModel`. Recorded in `initializedRouters` before `init` is invoked
+            // so the `finally` disposes it 1:1 even if `init` throws (an `init`
+            // failure is non-fatal — logged at `warn`, the run continues, and the
+            // router may still resolve at route time with whatever state it has).
+            for (const router of this.opts.routers) {
+                initializedRouters.push(router);
+                if (!router.init)
+                    continue;
+                try {
+                    await router.init({
+                        apiKey,
+                        ...(baseUrl !== undefined && { baseUrl }),
+                        defaultModel: model,
+                        ...(logger !== undefined && { logger }),
+                    });
+                }
+                catch (err) {
+                    logger?.('warn', 'Router init failed — continuing without warm-up', {
+                        router: router.name,
+                        error: err instanceof Error ? err.message : String(err),
+                    });
+                }
             }
             // Phase 5.5: shared state for the `tool_search` / `tool_load` pair.
             // `loadedToolNames` is the per-run working-set; `toolsForRun` is the
@@ -1971,6 +2002,19 @@ export class OpenRouterAgentRun {
                     durationMs: Date.now() - startedAt,
                     reason: 'closed',
                 });
+            }
+            // Routers: dispose every router that reached the init phase, paired 1:1
+            // with the init loop above. A throwing `dispose` is swallowed (logged at
+            // `error`) so one misbehaving router can't break the rest of cleanup.
+            for (const router of initializedRouters) {
+                if (!router.dispose)
+                    continue;
+                try {
+                    await router.dispose();
+                }
+                catch (err) {
+                    logger?.('error', 'Router dispose failed', { router: router.name, error: err });
+                }
             }
             // Clear the iter guard BEFORE the auto-compact call so the auto-trigger
             // (which calls this.compact('auto')) does not throw on its own guard.

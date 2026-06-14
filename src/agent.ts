@@ -85,6 +85,7 @@ import {
 import { McpBridge, MCP_TOOL_NAME_SEPARATOR } from './mcp/bridge.js';
 import { loadMcpConfig, type McpServerConfig } from './mcp/config.js';
 import type { LoadedPlugin } from './plugins/index.js';
+import type { RouterPlugin } from './router.js';
 import {
   StreamingInputSource,
   commitPartialResponse,
@@ -830,6 +831,19 @@ export interface OpenRouterAgentRunOptions {
    * empty array.
    */
   plugins?: readonly LoadedPlugin[];
+  /**
+   * In-memory router plugins (autorouters / pseudomodels). Each
+   * {@link RouterPlugin} claims one or more fake model IDs (e.g. `auto/coding`)
+   * and resolves them to a concrete model just before a request is dispatched.
+   * See `plans/autorouter-pseudomodels.md` and {@link RouterPlugin}.
+   *
+   * Lifecycle: every router's {@link RouterPlugin.init} (when present) fires
+   * once after the `Setup` hook and before the first `callModel`; the matching
+   * {@link RouterPlugin.dispose} fires once in the run's `finally`. An `init`
+   * that throws is non-fatal — the run continues and that router still gets a
+   * paired `dispose`. Defaults to an empty array.
+   */
+  routers?: readonly RouterPlugin[];
 }
 
 interface ResolvedOptions {
@@ -969,6 +983,8 @@ interface ResolvedOptions {
   skillEnv: Readonly<Record<string, string>>;
   /** Phase 5.8: resolved plugin contributions (empty array when none supplied). */
   plugins: readonly LoadedPlugin[];
+  /** Resolved in-memory router plugins (empty array when none supplied). */
+  routers: readonly RouterPlugin[];
 }
 
 function resolveOptions(opts: OpenRouterAgentRunOptions): ResolvedOptions {
@@ -1072,6 +1088,7 @@ function resolveOptions(opts: OpenRouterAgentRunOptions): ResolvedOptions {
     disableSkillShellExecution: opts.disableSkillShellExecution ?? false,
     skillEnv: opts.skillEnv ?? {},
     plugins,
+    routers: opts.routers ?? [],
   };
 }
 
@@ -1696,6 +1713,13 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     // `skill.pluginName` truthy check).
     const pluginByName = new Map(this.opts.plugins.map((p) => [p.manifest.name, p]));
 
+    // Routers (autorouters / pseudomodels): every router that reaches the init
+    // phase below is recorded here so the outer `finally` can fire its paired
+    // `dispose` exactly once. Empty when no routers are configured, or when the
+    // run aborts at construction before the init loop runs (no lifecycle to
+    // bracket — mirrors the `pluginStartTimes` skip semantics).
+    const initializedRouters: RouterPlugin[] = [];
+
     // Thin forwarder around the class-level safeFireHook so the existing
     // closures in this generator (subagent lifecycle emitters,
     // wrapToolWithHooks plumbing, etc.) keep their original call signature.
@@ -1986,6 +2010,29 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             hooks: plugin.hookConfigs.length,
           },
         });
+      }
+
+      // Routers: warm up each router AFTER PluginStart and BEFORE the first
+      // `callModel`. Recorded in `initializedRouters` before `init` is invoked
+      // so the `finally` disposes it 1:1 even if `init` throws (an `init`
+      // failure is non-fatal — logged at `warn`, the run continues, and the
+      // router may still resolve at route time with whatever state it has).
+      for (const router of this.opts.routers) {
+        initializedRouters.push(router);
+        if (!router.init) continue;
+        try {
+          await router.init({
+            apiKey,
+            ...(baseUrl !== undefined && { baseUrl }),
+            defaultModel: model,
+            ...(logger !== undefined && { logger }),
+          });
+        } catch (err) {
+          logger?.('warn', 'Router init failed — continuing without warm-up', {
+            router: router.name,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
 
       // Phase 5.5: shared state for the `tool_search` / `tool_load` pair.
@@ -2971,6 +3018,17 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           durationMs: Date.now() - startedAt,
           reason: 'closed',
         });
+      }
+      // Routers: dispose every router that reached the init phase, paired 1:1
+      // with the init loop above. A throwing `dispose` is swallowed (logged at
+      // `error`) so one misbehaving router can't break the rest of cleanup.
+      for (const router of initializedRouters) {
+        if (!router.dispose) continue;
+        try {
+          await router.dispose();
+        } catch (err) {
+          logger?.('error', 'Router dispose failed', { router: router.name, error: err });
+        }
       }
       // Clear the iter guard BEFORE the auto-compact call so the auto-trigger
       // (which calls this.compact('auto')) does not throw on its own guard.

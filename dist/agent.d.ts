@@ -11,6 +11,7 @@ import { type AgentMessage } from './messages.js';
 import { type ForkSessionResult } from './session-fork.js';
 import { type McpServerConfig } from './mcp/config.js';
 import type { LoadedPlugin } from './plugins/index.js';
+import type { RouterPlugin } from './router.js';
 import { type UserInput } from './streaming-input.js';
 /**
  * Default system instructions for the built-in code-editing agent. Exported so
@@ -694,6 +695,19 @@ export interface OpenRouterAgentRunOptions {
      * empty array.
      */
     plugins?: readonly LoadedPlugin[];
+    /**
+     * In-memory router plugins (autorouters / pseudomodels). Each
+     * {@link RouterPlugin} claims one or more fake model IDs (e.g. `auto/coding`)
+     * and resolves them to a concrete model just before a request is dispatched.
+     * See `plans/autorouter-pseudomodels.md` and {@link RouterPlugin}.
+     *
+     * Lifecycle: every router's {@link RouterPlugin.init} (when present) fires
+     * once after the `Setup` hook and before the first `callModel`; the matching
+     * {@link RouterPlugin.dispose} fires once in the run's `finally`. An `init`
+     * that throws is non-fatal — the run continues and that router still gets a
+     * paired `dispose`. Defaults to an empty array.
+     */
+    routers?: readonly RouterPlugin[];
 }
 /**
  * Single-shot async iterable that drives an OpenRouter agent turn-by-turn and

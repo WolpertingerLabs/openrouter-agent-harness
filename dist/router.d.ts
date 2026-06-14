@@ -13,9 +13,9 @@
  * config + lifecycle, and are passed in-memory to the run constructor. Unlike
  * `plugins`, a router can influence the model call.
  *
- * Step 1 of `plans/autorouter-pseudomodels.md` defines only the type surface;
- * the resolution engine, lifecycle wiring, and canonical factories land in
- * later steps.
+ * Step 1 of `plans/autorouter-pseudomodels.md` defines the type surface; step 2
+ * adds the pure resolution engine ({@link resolveRoute}, {@link isPseudoModel}).
+ * Lifecycle wiring, stickiness, and the canonical factories land in later steps.
  */
 import type { AgentLogger } from './agent.js';
 /**
@@ -87,4 +87,45 @@ export interface RouterInitContext {
     defaultModel: string;
     logger?: AgentLogger;
 }
+/**
+ * The outcome of resolving a (possibly pseudo) model ID against a router
+ * registry. Returned by {@link resolveRoute} when some router claims the ID.
+ */
+export interface RouteResolution {
+    /** Concrete model the request should run against. */
+    resolvedModel: string;
+    /** Per-route param overrides to merge into the request, if any. */
+    modelParams?: Record<string, unknown>;
+    /** Human-readable rationale from the router, surfaced in events/logs. */
+    reason?: string;
+    /** {@link RouterPlugin.name} of the router that claimed the ID. */
+    routerName: string;
+    /**
+     * `true` when routing failed (router threw, or resolved to another
+     * pseudomodel past the depth guard) and {@link RouteResolution.resolvedModel}
+     * is the fail-safe default rather than the router's choice.
+     */
+    fellBack: boolean;
+}
+/**
+ * Whether `model` is a pseudomodel — i.e. some router in `routers` claims it.
+ * Registry membership (not a prefix) is the source of truth.
+ */
+export declare function isPseudoModel(model: string, routers: ReadonlyArray<RouterPlugin>): boolean;
+/**
+ * Resolve `model` against the router registry, returning the concrete model the
+ * request should run against (plus provenance), or `null` when no router claims
+ * the ID — in which case the caller uses `model` verbatim.
+ *
+ * Semantics (see `plans/autorouter-pseudomodels.md` § Resolution semantics):
+ * - **First claimer wins**, in array order (`provides` exact, else `match`).
+ * - **Depth-1 guard:** if the router resolves to *another* pseudomodel, reject
+ *   it and fall back to `ctx.defaultModel` (no pseudo→pseudo loops).
+ * - **Fail-safe:** any throw from `route()` falls back to `ctx.defaultModel`.
+ *   A routing failure NEVER propagates out of this function.
+ *
+ * This is pure save for the optional `logger` calls; stickiness/caching is a
+ * separate concern layered on top in a later step.
+ */
+export declare function resolveRoute(model: string, ctx: RoutingContext, routers: ReadonlyArray<RouterPlugin>, logger?: AgentLogger): Promise<RouteResolution | null>;
 //# sourceMappingURL=router.d.ts.map
