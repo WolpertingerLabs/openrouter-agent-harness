@@ -993,6 +993,103 @@ describe('integration: compaction + routers (pseudomodels)', () => {
     expect(compactionCtxs[0]?.pseudoModel).toBe('auto/tiny');
   });
 
+  it('emits a compaction-phase router_decision as a trailing event after stream_complete', async () => {
+    const router: RouterPlugin = {
+      name: 'compact-router',
+      provides: ['auto/tiny'],
+      route: (ctx: RoutingContext): RouteDecision =>
+        ctx.phase === 'compaction'
+          ? { model: 'tiny/real', reason: 'cheap summarizer' }
+          : { model: 'turn/real' },
+    };
+
+    await seedState({ logsRoot, sessionId: SESSION, messages: sixMessages() });
+    state.fixtureQueue = [parentFixture(), compactFixture('EVT-SUMMARY')];
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'auto/tiny',
+      modelContextWindows: { 'tiny/real': 10 },
+      keepRecentTurns: 2,
+      routers: [router],
+    });
+
+    const events: AgentCoreEvent[] = [];
+    for await (const e of run) events.push(e);
+
+    const decisions = events.filter(
+      (e): e is Extract<AgentCoreEvent, { type: 'router_decision' }> =>
+        e.type === 'router_decision',
+    );
+    // One per phase: the main turn and the compaction pass.
+    const turnDecision = decisions.find((d) => d.phase === 'turn');
+    const compactionDecision = decisions.find((d) => d.phase === 'compaction');
+    expect(turnDecision?.resolvedModel).toBe('turn/real');
+    expect(compactionDecision).toEqual({
+      type: 'router_decision',
+      pseudoModel: 'auto/tiny',
+      resolvedModel: 'tiny/real',
+      turn: 0,
+      phase: 'compaction',
+      reason: 'cheap summarizer',
+      routerName: 'compact-router',
+      fellBack: false,
+    });
+
+    // The compaction decision is the run's final event — it is yielded from the
+    // generator's `finally`, after the terminal stream_complete.
+    const completeIdx = events.findIndex((e) => e.type === 'stream_complete');
+    const compactionIdx = events.findIndex(
+      (e) => e.type === 'router_decision' && e.phase === 'compaction',
+    );
+    expect(completeIdx).toBeGreaterThanOrEqual(0);
+    expect(compactionIdx).toBe(events.length - 1);
+    expect(compactionIdx).toBeGreaterThan(completeIdx);
+  });
+
+  it('emits the compaction router_decision even when the threshold check skips the actual compaction', async () => {
+    // `auto/big` resolves to a model with a huge window, so the threshold is
+    // never crossed and compact() is never called — but the route WAS consulted
+    // to size the threshold, so the decision is still surfaced.
+    const router: RouterPlugin = {
+      name: 'big-router',
+      provides: ['auto/big'],
+      route: (): RouteDecision => ({ model: 'big/real' }),
+    };
+
+    await seedState({ logsRoot, sessionId: SESSION, messages: sixMessages() });
+    state.fixtureQueue = [parentFixture()];
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'auto/big',
+      // 1M-token window → threshold ≈ 3.2M chars, never reached by the seed.
+      modelContextWindows: { 'big/real': 1_000_000 },
+      keepRecentTurns: 2,
+      routers: [router],
+    });
+
+    const events: AgentCoreEvent[] = [];
+    for await (const e of run) events.push(e);
+
+    // Only the parent turn ran — no compaction sub-call.
+    expect(state.callModelArgs.length).toBe(1);
+    const compactionDecision = events.find(
+      (e) => e.type === 'router_decision' && e.phase === 'compaction',
+    );
+    expect(compactionDecision).toMatchObject({
+      phase: 'compaction',
+      resolvedModel: 'big/real',
+      fellBack: false,
+    });
+  });
+
   it('merges compaction-route modelParams into the summarizer call', async () => {
     const router: RouterPlugin = {
       name: 'param-router',

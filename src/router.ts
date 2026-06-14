@@ -246,8 +246,14 @@ export function createRouteCache(): RouteCache {
 /**
  * Build the cache key for a `(pseudoModel, phase)` pair. The NUL separator can't
  * appear in a model ID or phase, so distinct pairs never collide.
+ *
+ * Exported so a caller can probe {@link RouteCache.has} BEFORE
+ * {@link resolveRouteCached} to tell a fresh resolution (cache miss) from a
+ * reused sticky decision (cache hit) — the agent loop emits a `router_decision`
+ * event only on the cycle that actually routes, not when a pinned sticky
+ * decision is replayed.
  */
-function cacheKey(pseudoModel: string, phase: RoutingContext['phase']): string {
+export function routeCacheKey(pseudoModel: string, phase: RoutingContext['phase']): string {
   return `${phase} ${pseudoModel}`;
 }
 
@@ -271,7 +277,7 @@ export async function resolveRouteCached(
   cache: RouteCache,
   logger?: AgentLogger,
 ): Promise<RouteResolution | null> {
-  const key = cacheKey(model, ctx.phase);
+  const key = routeCacheKey(model, ctx.phase);
   const cached = cache.get(key);
   if (cached) return cached;
 

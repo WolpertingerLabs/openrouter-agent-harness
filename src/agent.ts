@@ -91,6 +91,8 @@ import {
   isPseudoModel,
   resolveRoute,
   resolveRouteCached,
+  routeCacheKey,
+  type RouteResolution,
   type RouterPlugin,
   type RoutingContext,
 } from './router.js';
@@ -1152,6 +1154,13 @@ function resolveSkillLoader(
 interface ResolvedCompactionModel {
   model: string;
   modelParams?: Record<string, unknown>;
+  /**
+   * The `router_decision` event for this compaction resolution, present only
+   * when the run's `model` was a pseudomodel that a router claimed. The
+   * auto-compaction trigger yields this from {@link OpenRouterAgentRun.iterate}'s
+   * `finally` so consumers observe which model compaction routed to.
+   */
+  decision?: Extract<AgentCoreEvent, { type: 'router_decision' }>;
 }
 
 /**
@@ -1394,6 +1403,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     return {
       model: resolution.resolvedModel,
       ...(resolution.modelParams !== undefined && { modelParams: resolution.modelParams }),
+      decision: buildRouterDecisionEvent(model, 0, 'compaction', resolution),
     };
   }
 
@@ -1779,6 +1789,15 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     // host process. Holding the event here lets the catch arm convert it to
     // the pretty-printed reason via {@link extractResponseFailedMessage}.
     let pendingFailedEvent: unknown = null;
+    // Holds the compaction-phase `router_decision` event produced by the
+    // auto-compaction trigger in the `finally` below. Yielded as the very last
+    // statement of `finally` (after the Stop hook) so it never suspends the
+    // cleanup bracket on an early-`break` consumer's `return()`, yet is still
+    // delivered to consumers that drain the stream to completion. `undefined`
+    // unless the run's `model` is a pseudomodel and auto-compaction resolved it.
+    let pendingCompactionDecision:
+      | Extract<AgentCoreEvent, { type: 'router_decision' }>
+      | undefined;
 
     this.#isIterating = true;
 
@@ -2468,6 +2487,11 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             budgetRemainingUsd: Math.max(0, maxBudgetUsd - totalCostUsd),
             ...(previousModel !== undefined && { previousModel }),
           };
+          // Probe the cache BEFORE resolving so we can tell a fresh resolution
+          // (miss) from a replayed sticky decision (hit): a `router_decision`
+          // event is emitted only on the cycle that actually routes, not on the
+          // cycles where a pinned sticky model is reused.
+          const freshResolution = !routeCache.has(routeCacheKey(model, 'turn'));
           const resolution = await resolveRouteCached(
             model,
             routingCtx,
@@ -2478,6 +2502,13 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
           if (resolution) {
             requestModel = resolution.resolvedModel;
             routedParams = resolution.modelParams;
+            // Surface the resolution before this cycle's `callModel` (and thus
+            // before its `turn_start`). A sticky route emits exactly one
+            // `'turn'` event (its first cycle is the only miss); `sticky: false`
+            // and fallbacks never cache, so every cycle is a miss and re-emits.
+            if (freshResolution) {
+              yield buildRouterDecisionEvent(model, cycleIndex, 'turn', resolution);
+            }
           }
         }
         previousModel = requestModel;
@@ -3199,6 +3230,12 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
             // default a pseudomodel would silently fall to), then thread the
             // decision into compact() so the route is consulted only once.
             const compaction = await this.resolveCompactionModel(stateMessages);
+            // Record the resolution (if the model was a pseudomodel) so the
+            // trailing yield at the end of `finally` surfaces it. Captured even
+            // when the threshold check below skips the actual compaction call —
+            // the route was still consulted (and, for a classifier router, paid
+            // for), so "emit on every resolution" holds.
+            pendingCompactionDecision = compaction.decision;
             if (this.isOverCompactionThreshold(stateMessages, compaction.model)) {
               await this.compact('auto', compaction);
             }
@@ -3226,6 +3263,16 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       // exited iterate(); when the run somehow exited without setting
       // stopPayload, the default 'error' captured at init time is used.
       await safeFireHook('Stop', stopPayload);
+
+      // Final statement of `finally`: surface the compaction-phase
+      // `router_decision` (if auto-compaction routed a pseudomodel). It must be
+      // last — a `yield` here suspends the generator, and on an early-`break`
+      // consumer's `return()` the suspension would skip anything after it; with
+      // nothing after, no cleanup is lost. Full-drain consumers receive it as a
+      // trailing event after `stream_complete`; early-`break` consumers may not.
+      if (pendingCompactionDecision !== undefined) {
+        yield pendingCompactionDecision;
+      }
     }
   }
 }
@@ -4011,6 +4058,31 @@ function toTranscriptUsage(u: unknown): TranscriptUsage | undefined {
     result.cached = usage.inputTokensDetails.cachedTokens;
   }
   return result;
+}
+
+/**
+ * Project a {@link RouteResolution} onto the `router_decision`
+ * {@link AgentCoreEvent} variant. Shared by the main-turn and compaction
+ * resolution sites so both emit an identically-shaped event. `reason` is
+ * spread in only when the router supplied one (keeps the event minimal and
+ * matches the optional field on the type).
+ */
+function buildRouterDecisionEvent(
+  pseudoModel: string,
+  turn: number,
+  phase: 'turn' | 'compaction',
+  resolution: RouteResolution,
+): Extract<AgentCoreEvent, { type: 'router_decision' }> {
+  return {
+    type: 'router_decision',
+    pseudoModel,
+    resolvedModel: resolution.resolvedModel,
+    turn,
+    phase,
+    ...(resolution.reason !== undefined && { reason: resolution.reason }),
+    routerName: resolution.routerName,
+    fellBack: resolution.fellBack,
+  };
 }
 
 function deriveCompletionStatus(input: DeriveCompletionInput): AgentCoreEventStatus {

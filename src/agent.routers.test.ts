@@ -38,6 +38,7 @@ vi.mock('./tools/server-tools.js', () => ({
 
 import { OpenRouterAgentRun } from './agent.js';
 import type { RouterPlugin, RoutingContext, RouteDecision, RouterInitContext } from './router.js';
+import type { AgentCoreEvent } from './events.js';
 import type { UserInput } from './streaming-input.js';
 
 // The harness default model — the fail-safe fallback a route resolves to when
@@ -83,6 +84,23 @@ async function drain(run: OpenRouterAgentRun): Promise<void> {
   for await (const _ of run) {
     void _;
   }
+}
+
+/** Drain a run, collecting every yielded {@link AgentCoreEvent}. */
+async function collect(run: OpenRouterAgentRun): Promise<AgentCoreEvent[]> {
+  const events: AgentCoreEvent[] = [];
+  for await (const e of run) events.push(e);
+  return events;
+}
+
+/** The `router_decision` events from a collected stream, in order. */
+function routerDecisions(
+  events: AgentCoreEvent[],
+): Array<Extract<AgentCoreEvent, { type: 'router_decision' }>> {
+  return events.filter(
+    (e): e is Extract<AgentCoreEvent, { type: 'router_decision' }> =>
+      e.type === 'router_decision',
+  );
 }
 
 // Minimal router that never claims a real model — lifecycle-only for these
@@ -491,5 +509,152 @@ describe('OpenRouterAgentRun — router wiring (main callModel)', () => {
     // Fallbacks are never sticky — the router is re-consulted next turn.
     expect(route).toHaveBeenCalledTimes(2);
     expect(warnings.some((m) => m.includes('falling back to default'))).toBe(true);
+  });
+});
+
+describe('OpenRouterAgentRun — router_decision event (turn phase)', () => {
+  it('emits one router_decision per resolution, before the cycle that uses it', async () => {
+    const router: RouterPlugin = {
+      name: 'coding-router',
+      provides: ['auto/coding'],
+      route: (): RouteDecision => ({ model: 'real/concrete', reason: 'because coding' }),
+    };
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: 'r-event',
+      prompt: 'hi',
+      model: 'auto/coding',
+      persistSession: false,
+      routers: [router],
+    });
+    const events = await collect(run);
+
+    const decisions = routerDecisions(events);
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toEqual({
+      type: 'router_decision',
+      pseudoModel: 'auto/coding',
+      resolvedModel: 'real/concrete',
+      turn: 0,
+      phase: 'turn',
+      reason: 'because coding',
+      routerName: 'coding-router',
+      fellBack: false,
+    });
+
+    // The decision is yielded inline in the loop, before the terminal
+    // stream_complete (it precedes the cycle's callModel).
+    const decisionIdx = events.findIndex((e) => e.type === 'router_decision');
+    const completeIdx = events.findIndex((e) => e.type === 'stream_complete');
+    expect(decisionIdx).toBeGreaterThanOrEqual(0);
+    expect(completeIdx).toBeGreaterThan(decisionIdx);
+  });
+
+  it('omits reason when the router supplies none', async () => {
+    const router: RouterPlugin = {
+      name: 'r',
+      provides: ['auto/x'],
+      route: (): RouteDecision => ({ model: 'real/x' }),
+    };
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: 'r-event-noreason',
+      prompt: 'hi',
+      model: 'auto/x',
+      persistSession: false,
+      routers: [router],
+    });
+    const [decision] = routerDecisions(await collect(run));
+
+    expect(decision).toBeDefined();
+    expect(decision).not.toHaveProperty('reason');
+  });
+
+  it('does not emit when the model is not a pseudomodel', async () => {
+    const router: RouterPlugin = {
+      name: 'r',
+      provides: ['auto/x'],
+      route: (): RouteDecision => ({ model: 'never/used' }),
+    };
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: 'r-event-none',
+      prompt: 'hi',
+      model: 'real/model',
+      persistSession: false,
+      routers: [router],
+    });
+
+    expect(routerDecisions(await collect(run))).toHaveLength(0);
+  });
+
+  it('emits once for a sticky route, every turn for a sticky:false route', async () => {
+    let n = 0;
+    const sticky: RouterPlugin = {
+      name: 'sticky',
+      provides: ['auto/s'],
+      route: (): RouteDecision => ({ model: `m/${n++}` }),
+    };
+    const stickyRun = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: 'r-event-sticky',
+      prompt: twoTurnPrompt(),
+      model: 'auto/s',
+      persistSession: false,
+      routers: [sticky],
+    });
+    const stickyDecisions = routerDecisions(await collect(stickyRun));
+    expect(stickyDecisions).toHaveLength(1);
+    expect(stickyDecisions[0]?.turn).toBe(0);
+    expect(stickyDecisions[0]?.resolvedModel).toBe('m/0');
+
+    let k = 0;
+    const fresh: RouterPlugin = {
+      name: 'fresh',
+      provides: ['auto/f'],
+      route: (): RouteDecision => ({ model: `m/${k++}`, sticky: false }),
+    };
+    const freshRun = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: 'r-event-fresh',
+      prompt: twoTurnPrompt(),
+      model: 'auto/f',
+      persistSession: false,
+      routers: [fresh],
+    });
+    const freshDecisions = routerDecisions(await collect(freshRun));
+    expect(freshDecisions.map((d) => [d.turn, d.resolvedModel])).toEqual([
+      [0, 'm/0'],
+      [1, 'm/1'],
+    ]);
+  });
+
+  it('marks fellBack=true and resolves to the default when the router throws', async () => {
+    const router: RouterPlugin = {
+      name: 'boom-router',
+      provides: ['auto/x'],
+      route: (): RouteDecision => {
+        throw new Error('routing boom');
+      },
+    };
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: 'r-event-fallback',
+      prompt: 'hi',
+      model: 'auto/x',
+      persistSession: false,
+      routers: [router],
+    });
+    const [decision] = routerDecisions(await collect(run));
+
+    expect(decision).toEqual({
+      type: 'router_decision',
+      pseudoModel: 'auto/x',
+      resolvedModel: DEFAULT_MODEL,
+      turn: 0,
+      phase: 'turn',
+      routerName: 'boom-router',
+      fellBack: true,
+    });
   });
 });
