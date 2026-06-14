@@ -30,6 +30,7 @@ vi.mock('../../tools/server-tools.js', () => ({
 
 import { OpenRouterAgentRun } from '../../index.js';
 import type { AgentCoreEvent, HookEvent, HookPayload } from '../../index.js';
+import type { RouterPlugin, RouteDecision, RoutingContext } from '../../router.js';
 
 const SESSION = 'integration-compaction';
 
@@ -928,5 +929,203 @@ describe('integration: context compaction', () => {
     });
     await run2.compact();
     expect(state.callModelArgs.length).toBe(0);
+  });
+});
+
+describe('integration: compaction + routers (pseudomodels)', () => {
+  /** Six ~35-char serialized messages — enough to cross a tiny char threshold. */
+  function sixMessages(): Array<{ role: string; content: string }> {
+    return [
+      { role: 'user', content: 'aaaaaaaaaa' },
+      { role: 'assistant', content: 'bbbbbbbbbb' },
+      { role: 'user', content: 'cccccccccc' },
+      { role: 'assistant', content: 'dddddddddd' },
+      { role: 'user', content: 'eeeeeeeeee' },
+      { role: 'assistant', content: 'ffffffffff' },
+    ];
+  }
+
+  it('routes the compaction pass to the resolved model and sizes the threshold against its window', async () => {
+    // `auto/tiny` is unknown to the static context-window table. Without
+    // resolution the threshold would size against the 128k default (≈409k
+    // chars) and NEVER fire on this ~210-char seed. With resolution → the
+    // `tiny/real` override (10-token window → floor(10*4*0.8)=32 chars) is
+    // used, so compaction fires. Firing is the proof the RESOLVED window won.
+    const seenCtxs: RoutingContext[] = [];
+    const route = vi.fn((ctx: RoutingContext): RouteDecision => {
+      seenCtxs.push(ctx);
+      return { model: 'tiny/real' };
+    });
+    const router: RouterPlugin = { name: 'compact-router', provides: ['auto/tiny'], route };
+
+    await seedState({ logsRoot, sessionId: SESSION, messages: sixMessages() });
+    state.fixtureQueue = [parentFixture(), compactFixture('ROUTED-SUMMARY')];
+
+    const hookEvents: HookEvent[] = [];
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'auto/tiny',
+      modelContextWindows: { 'tiny/real': 10 },
+      keepRecentTurns: 2,
+      routers: [router],
+      onHook: (event) => {
+        hookEvents.push(event);
+      },
+    });
+
+    for await (const _ of run) void _;
+
+    expect(hookEvents).toContain('PreCompact');
+    // Parent run + compaction sub-call, the latter on the RESOLVED model.
+    expect(state.callModelArgs.length).toBe(2);
+    const compactArgs = state.callModelArgs[1] as { model: string; sessionId: string };
+    expect(compactArgs.model).toBe('tiny/real');
+    expect(compactArgs.sessionId).toMatch(/^integration-compaction:compact:/);
+    // The same pseudomodel drives the main turn AND compaction, so the router
+    // fires once per phase. The compaction route is consulted exactly once
+    // (the auto-trigger resolves once and threads the decision into compact()).
+    const compactionCtxs = seenCtxs.filter((c) => c.phase === 'compaction');
+    expect(compactionCtxs).toHaveLength(1);
+    expect(compactionCtxs[0]?.turn).toBe(0);
+    expect(compactionCtxs[0]?.pseudoModel).toBe('auto/tiny');
+  });
+
+  it('merges compaction-route modelParams into the summarizer call', async () => {
+    const router: RouterPlugin = {
+      name: 'param-router',
+      provides: ['auto/x'],
+      route: (): RouteDecision => ({ model: 'cheap/real', modelParams: { temperature: 0.1 } }),
+    };
+
+    await seedState({ logsRoot, sessionId: SESSION, messages: sixMessages() });
+    state.fixtureQueue = [parentFixture(), compactFixture('PARAM-SUMMARY')];
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'auto/x',
+      compactionThreshold: 100, // chars — well below the ~210-char seed
+      keepRecentTurns: 2,
+      modelParams: { temperature: 0.9 },
+      routers: [router],
+    });
+
+    for await (const _ of run) void _;
+
+    expect(state.callModelArgs.length).toBe(2);
+    const compactArgs = state.callModelArgs[1] as { model: string; temperature: number };
+    expect(compactArgs.model).toBe('cheap/real');
+    // Per-route params override the run-level passthrough.
+    expect(compactArgs.temperature).toBe(0.1);
+  });
+
+  it('manual compact() resolves the compaction model when the run model is a pseudomodel', async () => {
+    const router: RouterPlugin = {
+      name: 'manual-router',
+      provides: ['auto/m'],
+      route: (): RouteDecision => ({ model: 'manual/real' }),
+    };
+
+    const statePath = await seedState({
+      logsRoot,
+      sessionId: SESSION,
+      messages: sixMessages(),
+      previousResponseId: 'resp-clear',
+    });
+    state.fixtureQueue = [compactFixture('MANUAL-ROUTED-SUMMARY')];
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'never iterated',
+      logsRoot,
+      model: 'auto/m',
+      autoCompact: false,
+      keepRecentTurns: 2,
+      routers: [router],
+    });
+
+    await run.compact();
+
+    expect(state.callModelArgs.length).toBe(1);
+    const compactArgs = state.callModelArgs[0] as { model: string; sessionId: string };
+    expect(compactArgs.model).toBe('manual/real');
+    expect(compactArgs.sessionId).toMatch(/^integration-compaction:compact:/);
+
+    const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
+    expect(persisted.messages[0].content).toContain('MANUAL-ROUTED-SUMMARY');
+  });
+
+  it('passes a real model through unchanged when a configured router does not claim it', async () => {
+    // The run uses a real model; the lone router only claims a different
+    // pseudomodel, so resolution finds no claimer and the model passes
+    // through verbatim to both the parent and the compaction sub-call.
+    const route = vi.fn((): RouteDecision => ({ model: 'never/used' }));
+    const router: RouterPlugin = { name: 'unrelated-router', provides: ['auto/other'], route };
+
+    await seedState({ logsRoot, sessionId: SESSION, messages: sixMessages() });
+    state.fixtureQueue = [parentFixture(), compactFixture('PASSTHROUGH-SUMMARY')];
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'real/plain',
+      compactionThreshold: 100,
+      keepRecentTurns: 2,
+      routers: [router],
+    });
+
+    for await (const _ of run) void _;
+
+    expect(state.callModelArgs.length).toBe(2);
+    expect((state.callModelArgs[0] as { model: string }).model).toBe('real/plain');
+    expect((state.callModelArgs[1] as { model: string }).model).toBe('real/plain');
+    expect(route).not.toHaveBeenCalled();
+  });
+
+  it('tolerates non-array persisted messages while a router is configured', async () => {
+    // With routers configured AND a string `messages` field, the auto-compact
+    // pre-check coerces the non-array state to an empty history (nothing to
+    // summarize), so no compaction route fires and no sub-call is attempted.
+    const route = vi.fn((): RouteDecision => ({ model: 'never/used' }));
+    const router: RouterPlugin = { name: 'unrelated-router', provides: ['auto/other'], route };
+
+    await mkdir(join(logsRoot, SESSION), { recursive: true });
+    await writeFile(
+      join(logsRoot, SESSION, 'state.json'),
+      JSON.stringify({
+        id: SESSION,
+        messages: 'plain string input',
+        status: 'complete',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    state.fixture = parentFixture();
+
+    const run = new OpenRouterAgentRun({
+      apiKey: 'sk-test',
+      sessionId: SESSION,
+      prompt: 'continue',
+      logsRoot,
+      model: 'real/plain',
+      compactionThreshold: 1, // would fire if messages were an array
+      keepRecentTurns: 2,
+      routers: [router],
+    });
+
+    for await (const _ of run) void _;
+
+    // Only the parent call — the string-shaped state has nothing to compact.
+    expect(state.callModelArgs.length).toBe(1);
+    expect(route).not.toHaveBeenCalled();
   });
 });

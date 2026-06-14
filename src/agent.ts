@@ -89,6 +89,7 @@ import type { LoadedPlugin } from './plugins/index.js';
 import {
   createRouteCache,
   isPseudoModel,
+  resolveRoute,
   resolveRouteCached,
   type RouterPlugin,
   type RoutingContext,
@@ -1142,6 +1143,18 @@ function resolveSkillLoader(
 }
 
 /**
+ * The concrete model (plus any per-route param overrides) the compaction pass
+ * should run against, as returned by
+ * {@link OpenRouterAgentRun.resolveCompactionModel}. Passed from the
+ * auto-compaction trigger into {@link OpenRouterAgentRun.compact} so the
+ * compaction route is consulted exactly once per run.
+ */
+interface ResolvedCompactionModel {
+  model: string;
+  modelParams?: Record<string, unknown>;
+}
+
+/**
  * Single-shot async iterable that drives an OpenRouter agent turn-by-turn and
  * yields normalized {@link AgentCoreEvent}s. One instance per query. Construct,
  * `for await` the events, done.
@@ -1342,6 +1355,49 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
   }
 
   /**
+   * Resolve the concrete model the compaction pass should run against. When the
+   * run's `model` is a pseudomodel (some configured router claims it), run the
+   * resolution engine with `phase: 'compaction'` so the summarizer can ride a
+   * different (e.g. cheaper) model than the main turn — and, critically, so the
+   * context-window math in {@link isOverCompactionThreshold} sizes against the
+   * RESOLVED real model rather than silently falling to the 128k default.
+   * Otherwise the run's `model` passes through verbatim.
+   *
+   * Resolves fresh (no stickiness cache): compaction fires at most once per run
+   * boundary, so there is nothing to amortize, and the per-turn route cache is
+   * scoped to {@link iterate}. Routing is fail-safe inside the engine, so this
+   * never throws — a router failure falls back to {@link DEFAULT_MODEL}.
+   */
+  private async resolveCompactionModel(
+    messages: readonly unknown[],
+  ): Promise<ResolvedCompactionModel> {
+    const { model, routers, sessionId, logger } = this.opts;
+    if (routers.length === 0) return { model };
+    const serialized = serializeMessagesForEstimate(messages);
+    const routingCtx: RoutingContext = {
+      pseudoModel: model,
+      // Fail-safe fallback must be a real model — when `model` is the
+      // pseudomodel it can't double as its own default.
+      defaultModel: DEFAULT_MODEL,
+      sessionId,
+      turn: 0,
+      phase: 'compaction',
+      messages,
+      input: messages,
+      instructions: COMPACTION_PROMPT,
+      // The compaction sub-call runs without client tools.
+      tools: [],
+      estimatedTokens: Math.ceil(serialized.length / CHARS_PER_TOKEN),
+    };
+    const resolution = await resolveRoute(model, routingCtx, routers, logger);
+    if (!resolution) return { model };
+    return {
+      model: resolution.resolvedModel,
+      ...(resolution.modelParams !== undefined && { modelParams: resolution.modelParams }),
+    };
+  }
+
+  /**
    * Phase 5.1: condense the older portion of this run's persisted message
    * history into a single `developer`-role summary message, replacing the
    * prefix on disk. Loads {@link ConversationState} via the run's
@@ -1377,7 +1433,10 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
    * leaves the original state untouched and re-throws so the caller can
    * decide how to recover.
    */
-  async compact(reason: 'auto' | 'manual' = 'manual'): Promise<void> {
+  async compact(
+    reason: 'auto' | 'manual' = 'manual',
+    preResolved?: ResolvedCompactionModel,
+  ): Promise<void> {
     if (this.#isIterating) {
       throw new Error(
         'Cannot call compact() while iterate() is in progress — see the Mid-run safety note in the README.',
@@ -1397,13 +1456,23 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
       reason,
     });
 
+    // Resolve the (possibly pseudo-) model with `phase: 'compaction'` so the
+    // summarizer can ride a different model than the main turn. The auto-trigger
+    // already resolved it (to size the threshold) and threads the decision in
+    // via `preResolved`; a manual `compact()` resolves here.
+    const { model: compactionModel, modelParams: compactionParams } =
+      preResolved ?? (await this.resolveCompactionModel(rawMessages));
+
     const client = this.createOpenRouterClient();
     const compactSessionId = `${this.opts.sessionId}:compact:${randomUUID()}`;
     const result = client.callModel({
       // Same passthrough as the main cycle; spread first so the structural
-      // fields and `cacheControl` below win on conflict.
+      // fields and `cacheControl` below win on conflict. Per-route
+      // `modelParams` from the compaction route layer over the run-level
+      // passthrough (route wins) but still below the structural fields.
       ...this.opts.modelParams,
-      model: this.opts.model,
+      ...compactionParams,
+      model: compactionModel,
       sessionId: compactSessionId,
       input: JSON.stringify(summarize),
       instructions: COMPACTION_PROMPT,
@@ -1469,24 +1538,28 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
    * - **Token mode** — when {@link OpenRouterAgentRunOptions.tokenCounter}
    *   is set, the counter's output is compared against a TOKEN threshold:
    *   `compactionThreshold` verbatim when configured (reinterpreted as
-   *   tokens), else `floor(getModelContextWindow(model, modelContextWindows)
-   *   * DEFAULT_THRESHOLD_RATIO)`. A throwing counter logs a `'warn'` and
-   *   falls through to char mode for this check — a tokenizer bug must
-   *   never kill a run that was otherwise healthy.
+   *   tokens), else `floor(getModelContextWindow(windowModel,
+   *   modelContextWindows) * DEFAULT_THRESHOLD_RATIO)`. A throwing counter logs
+   *   a `'warn'` and falls through to char mode for this check — a tokenizer
+   *   bug must never kill a run that was otherwise healthy.
    * - **Char mode** (default) — serialized length vs.
    *   {@link resolveCompactionThresholdChars} (the v1 chars/4 heuristic),
    *   with the same per-run {@link OpenRouterAgentRunOptions.modelContextWindows}
    *   overrides applied to the window lookup.
+   *
+   * `windowModel` is the RESOLVED concrete model (see
+   * {@link resolveCompactionModel}); the window lookup must key on a real model,
+   * not a pseudomodel that would silently fall to the 128k default.
    */
-  private isOverCompactionThreshold(messages: unknown): boolean {
-    const { tokenCounter, compactionThreshold, model, modelContextWindows, logger } = this.opts;
+  private isOverCompactionThreshold(messages: unknown, windowModel: string): boolean {
+    const { tokenCounter, compactionThreshold, modelContextWindows, logger } = this.opts;
     const serialized = serializeMessagesForEstimate(messages);
     if (tokenCounter !== undefined) {
       try {
         const tokens = tokenCounter(serialized);
         const thresholdTokens = resolveCompactionThresholdTokens(
           compactionThreshold,
-          model,
+          windowModel,
           modelContextWindows,
         );
         return tokens >= thresholdTokens;
@@ -1498,7 +1571,7 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     }
     const thresholdChars = resolveCompactionThresholdChars(
       compactionThreshold,
-      model,
+      windowModel,
       modelContextWindows,
     );
     return serialized.length >= thresholdChars;
@@ -3113,8 +3186,22 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
         try {
           const persistedState = await this.stateAccessor.load();
           const messages = (persistedState as { messages?: unknown } | null)?.messages;
-          if (this.isOverCompactionThreshold(messages)) {
-            await this.compact('auto');
+          const stateMessages = Array.isArray(messages) ? messages : [];
+          // Cheap, model-independent pre-check: if there's nothing to summarize
+          // (history shorter than keepRecentTurns — same guard compact() uses),
+          // skip both the compaction-model resolution and the threshold math.
+          // This keeps short runs from needlessly consulting the router's
+          // compaction phase (which, for a classifier router, costs a call).
+          const { summarize } = partitionMessages(stateMessages, this.opts.keepRecentTurns);
+          if (summarize.length > 0) {
+            // Resolve the compaction model FIRST so the threshold check sizes
+            // against the routed real model's context window (not the 128k
+            // default a pseudomodel would silently fall to), then thread the
+            // decision into compact() so the route is consulted only once.
+            const compaction = await this.resolveCompactionModel(stateMessages);
+            if (this.isOverCompactionThreshold(stateMessages, compaction.model)) {
+              await this.compact('auto', compaction);
+            }
           }
         } catch (err) {
           logger?.('error', 'Auto-compaction failed', { error: err });
