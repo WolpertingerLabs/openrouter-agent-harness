@@ -8,8 +8,11 @@ describe('AgentCoreEvent union', () => {
       | 'session_started'
       | 'turn_start'
       | 'text_delta'
+      | 'reasoning_delta'
       | 'tool_call'
       | 'tool_result'
+      | 'server_tool'
+      | 'router_decision'
       | 'turn_end'
       | 'stream_complete'
       | 'error'
@@ -62,6 +65,18 @@ describe('AgentCoreEvent union', () => {
 
     type ErrorEvent = Extract<AgentCoreEvent, { type: 'error' }>;
     expectTypeOf<ErrorEvent>().toMatchTypeOf<{ type: 'error'; message: string }>();
+
+    type RouterDecision = Extract<AgentCoreEvent, { type: 'router_decision' }>;
+    expectTypeOf<RouterDecision>().toEqualTypeOf<{
+      type: 'router_decision';
+      pseudoModel: string;
+      resolvedModel: string;
+      turn: number;
+      phase: 'turn' | 'compaction';
+      reason?: string;
+      routerName: string;
+      fellBack: boolean;
+    }>();
   });
 
   it('AgentCoreEventStatus is the documented closed set', () => {

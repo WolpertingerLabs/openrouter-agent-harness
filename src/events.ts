@@ -46,6 +46,48 @@ export type AgentCoreEvent =
       /** Derived failure flag (web_fetch `error`, or non-`completed` status). */
       isError: boolean;
     }
+  | {
+      /**
+       * A pseudomodel (autorouter) resolution. Emitted whenever the run's
+       * configured `model` is a pseudomodel — i.e. some {@link
+       * import('./router.js').RouterPlugin} claims it — and the resolution
+       * engine produced a concrete model for a request. Carries the full
+       * provenance so a consumer can render/log which router fired, what it
+       * chose, and why.
+       *
+       * Fire timing differs by `phase`:
+       * - `'turn'` — yielded inline in the main loop immediately BEFORE the
+       *   cycle's `callModel`, so it precedes that turn's `turn_start`. A
+       *   sticky route emits this only on the first cycle that resolves it (the
+       *   cached decision short-circuits routing on later cycles); a
+       *   `sticky: false` route re-emits every cycle.
+       * - `'compaction'` — yielded at the very END of the run (after
+       *   `stream_complete` and the lifecycle hooks), because auto-compaction
+       *   runs post-loop in the generator's `finally`. Consumers that drain the
+       *   stream to completion observe it as a trailing event; consumers that
+       *   `break` early on `stream_complete` may not see it. It is ignored by
+       *   the rich-message projection ({@link import('./messages.js')}), so the
+       *   `ResultMessage` terminator is unaffected.
+       *
+       * `fellBack` is `true` when routing failed (the router threw, or resolved
+       * to another pseudomodel past the depth guard) and `resolvedModel` is the
+       * fail-safe default rather than the router's choice.
+       */
+      type: 'router_decision';
+      /** The fake ID the run requested (e.g. `auto/coding`). */
+      pseudoModel: string;
+      /** The concrete model the request actually runs against. */
+      resolvedModel: string;
+      /** Cycle index for `'turn'`; `0` for the single `'compaction'` pass. */
+      turn: number;
+      phase: 'turn' | 'compaction';
+      /** Rationale from the router, when it supplied one. */
+      reason?: string;
+      /** {@link import('./router.js').RouterPlugin.name} of the claiming router. */
+      routerName: string;
+      /** `true` when this is the fail-safe default, not the router's choice. */
+      fellBack: boolean;
+    }
   | { type: 'turn_end'; turnNumber: number; usage: TokenUsage | null; costUsd: number }
   | {
       type: 'stream_complete';
@@ -68,6 +110,15 @@ export type AgentCoreEvent =
        */
       detail?: Record<string, unknown>;
     };
+
+/**
+ * The `router_decision` variant of {@link AgentCoreEvent}, extracted as a
+ * standalone named type for consumers that handle pseudomodel routing
+ * decisions directly (e.g. rendering the per-turn resolved model). Emitted
+ * once per resolution — see the variant's doc comment in {@link AgentCoreEvent}
+ * for the turn/compaction timing and `fellBack` semantics.
+ */
+export type RouterDecisionEvent = Extract<AgentCoreEvent, { type: 'router_decision' }>;
 
 /**
  * Lifecycle hook event names fired by an {@link OpenRouterAgentRun}. Hooks are

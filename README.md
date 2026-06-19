@@ -79,22 +79,24 @@ Single-shot async iterable that drives one agent run. Construct, `for await` the
 | `keepRecentTurns`           | `number`                             | no       | `5`                                      | Phase 5.1: number of trailing messages preserved verbatim during compaction. Older messages are condensed into a single `developer`-role summary. Treated at message granularity, not strict conversational-turn granularity (the SDK's `InputsUnion` mixes user / assistant / tool-call / tool-result items; a robust turn-boundary detector is deferred).                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | `autoCompact`               | `boolean`                            | no       | `true`                                   | Phase 5.1: when `false`, suppresses the post-`stream_complete` threshold check. The manual `run.compact()` method still works regardless of this setting — `autoCompact: false` gates **only** the implicit trigger.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `enableToolSearch`          | `boolean`                            | no       | `false`                                  | Phase 5.5: when `true`, the built-in `tool_search` + `tool_load` tools are added to the default bundle AND the MCP bridge's tools are hidden from the model's initial tool pool until `tool_load` registers them. Trades up-front context cost for an on-demand lookup. See the [Dynamic tool discovery](#dynamic-tool-discovery-tool_search--tool_load) subsection. Ignored when a custom `tools` array is supplied. Loaded-tool state is per-run and does not propagate to spawned subagents.                                                                                                                                                                                                                                                                                                                                    |
+| `routers`                   | `readonly RouterPlugin[]`            | no       | `[]`                                     | In-memory router plugins (autorouters / pseudomodels). Each `RouterPlugin` claims one or more fake model IDs (e.g. `auto/coding`) and resolves them to a concrete model just before each `callModel`. Lifecycle: every router's `init()` fires once after the `Setup` hook and before the first `callModel`; the matching `dispose()` fires once in the run's `finally`. An `init` that throws is non-fatal — the run continues and that router still gets a paired `dispose`. See the [Routers / pseudomodels](#routers--pseudomodels) subsection.                                                                                                                                                                                                                                                                                |
 
 ### `AgentCoreEvent`
 
 Discriminated union yielded by `for await (... of run)`. Narrow on `event.type`.
 
-| Variant           | Payload                                                  | Notes                                                                                                                                                                                                                   |
-| ----------------- | -------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `session_started` | `{ sessionId, parentSessionId? }`                        | Fires once at the start of a run. `parentSessionId` is set only on forked runs.                                                                                                                                         |
-| `turn_start`      | `{ turnNumber }`                                         | Inner loop turn beginning (0-indexed).                                                                                                                                                                                  |
-| `text_delta`      | `{ content }`                                            | Streaming text chunk from the model.                                                                                                                                                                                    |
-| `tool_call`       | `{ callId, name, input }`                                | Model has emitted a function call. `input` is parsed JSON when valid.                                                                                                                                                   |
-| `tool_result`     | `{ callId, output, isError }`                            | Forwarded even after abort to surface cancellation observability.                                                                                                                                                       |
-| `server_tool`     | `{ toolType, callId?, status, input?, output, isError }` | One per OpenRouter server-executed tool (`openrouter:datetime`/`web_search`/`web_fetch`). Carries both invocation and result — no client `canUseTool` gate. `input` is recoverable only for `web_search` (`{ query }`). |
-| `turn_end`        | `{ turnNumber, usage, costUsd }`                         | Per-turn close-out with cumulative cost.                                                                                                                                                                                |
-| `stream_complete` | `{ status, usage?, costUsd?, durationMs?, reason? }`     | Terminal event. `status` is `success`/`max_turns`/`max_budget`/`error`.                                                                                                                                                 |
-| `error`           | `{ message, cause? }`                                    | Non-fatal error; always followed by a `stream_complete` with `status: 'error'`.                                                                                                                                         |
+| Variant           | Payload                                                                      | Notes                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| ----------------- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `session_started` | `{ sessionId, parentSessionId? }`                                            | Fires once at the start of a run. `parentSessionId` is set only on forked runs.                                                                                                                                                                                                                                                                                                                                                       |
+| `turn_start`      | `{ turnNumber }`                                                             | Inner loop turn beginning (0-indexed).                                                                                                                                                                                                                                                                                                                                                                                                |
+| `text_delta`      | `{ content }`                                                                | Streaming text chunk from the model.                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `tool_call`       | `{ callId, name, input }`                                                    | Model has emitted a function call. `input` is parsed JSON when valid.                                                                                                                                                                                                                                                                                                                                                                 |
+| `tool_result`     | `{ callId, output, isError }`                                                | Forwarded even after abort to surface cancellation observability.                                                                                                                                                                                                                                                                                                                                                                     |
+| `server_tool`     | `{ toolType, callId?, status, input?, output, isError }`                     | One per OpenRouter server-executed tool (`openrouter:datetime`/`web_search`/`web_fetch`). Carries both invocation and result — no client `canUseTool` gate. `input` is recoverable only for `web_search` (`{ query }`).                                                                                                                                                                                                               |
+| `router_decision` | `{ pseudoModel, resolvedModel, turn, phase, reason?, routerName, fellBack }` | Emitted once per pseudomodel resolution (see [Routers / pseudomodels](#routers--pseudomodels)). A `'turn'` event precedes that cycle's `turn_start`; a sticky route emits it only on the first resolving cycle. A `'compaction'` event trails the run (yielded post-loop, after `stream_complete`). `fellBack: true` means routing failed and `resolvedModel` is the fail-safe default. Exported standalone as `RouterDecisionEvent`. |
+| `turn_end`        | `{ turnNumber, usage, costUsd }`                                             | Per-turn close-out with cumulative cost.                                                                                                                                                                                                                                                                                                                                                                                              |
+| `stream_complete` | `{ status, usage?, costUsd?, durationMs?, reason? }`                         | Terminal event. `status` is `success`/`max_turns`/`max_budget`/`error`.                                                                                                                                                                                                                                                                                                                                                               |
+| `error`           | `{ message, cause? }`                                                        | Non-fatal error; always followed by a `stream_complete` with `status: 'error'`.                                                                                                                                                                                                                                                                                                                                                       |
 
 `HookEvent` and `HookPayload` are separately exported for `onHook` consumers; they are not part of `AgentCoreEvent`.
 
@@ -1354,6 +1356,137 @@ const skills = createSkillLoader({
 });
 const run = new OpenRouterAgentRun({ /* … */ skills, plugins });
 ```
+
+### Routers / pseudomodels
+
+Routers let a host auto-switch the model **per request** using its own logic. A **pseudomodel** is a fake model ID (e.g. `auto/coding`, `router/default`) that the harness recognizes and resolves to a _real_ model **just before** the request is handed to `@openrouter/agent`. The resolution runs a **router** — a code object you supply on the `routers` constructor option — that inspects the actual request (messages, input, instructions, visible tools, estimated tokens, remaining budget, previous model) and returns a concrete model. It emulates an OpenRouter-style auto-router, but the routing algorithm lives in your code.
+
+This is a sibling to the directory-bundle [`plugins`](#plugins-claude-pluginpluginjson) system: `routers` are code-first, carry per-router lifecycle + config, are passed in-memory, and — unlike `plugins` — can influence the model call.
+
+```ts
+import {
+  OpenRouterAgentRun,
+  createRuleRouter,
+  type RouterPlugin,
+} from '@wolpertingerlabs/openrouter-agent-harness';
+
+const run = new OpenRouterAgentRun({
+  apiKey,
+  sessionId,
+  prompt,
+  model: 'auto/coding', // a pseudomodel the router below claims
+  routers: [
+    createRuleRouter({
+      provides: ['auto/coding'],
+      defaultModel: 'anthropic/claude-sonnet-4',
+      rules: [
+        // Big contexts → a long-window model.
+        { minTokens: 120_000, model: 'google/gemini-2.5-pro', reason: 'large context' },
+        // Shell-heavy turns → a strong coding model.
+        { hasTool: 'run_command', model: 'anthropic/claude-sonnet-4', reason: 'shell present' },
+        // Cheap-out on simple lookups.
+        { keyword: ['what is', 'explain'], model: 'google/gemini-2.5-flash', reason: 'q&a' },
+      ],
+    }),
+  ],
+});
+```
+
+#### The contract
+
+```ts
+interface RouterPlugin {
+  name: string; // namespace, surfaced in router_decision events + logs
+  provides?: string[]; // pseudomodel IDs claimed by exact match
+  match?: (id: string) => boolean; // or claim dynamically (checked only if `provides` misses)
+  init?: (ctx: RouterInitContext) => void | Promise<void>; // warm-up before the first turn
+  route: (ctx: RoutingContext) => RouteDecision | Promise<RouteDecision>; // decide the model
+  dispose?: () => void | Promise<void>; // cleanup at run end
+}
+
+interface RoutingContext {
+  pseudoModel: string; // the fake ID requested
+  defaultModel: string; // fallback if routing fails
+  sessionId: string;
+  turn: number; // cycle index (0-based)
+  phase: 'turn' | 'compaction';
+  messages: ReadonlyArray<unknown>; // conversation state (read-only)
+  input: unknown; // this cycle's input
+  instructions: string; // system prompt
+  tools: ReadonlyArray<string>; // visible tool names
+  estimatedTokens: number;
+  budgetRemainingUsd?: number; // downgrade as budget depletes
+  previousModel?: string; // what ran last turn — enables stickiness
+}
+
+interface RouteDecision {
+  model: string; // concrete model ID
+  modelParams?: Record<string, unknown>; // optional per-route param overrides
+  reason?: string; // surfaced in the router_decision event
+  sticky?: boolean; // default true: cache for the run; false = re-decide each turn
+}
+
+interface RouterInitContext {
+  apiKey: string;
+  baseUrl?: string;
+  defaultModel: string;
+  logger?: AgentLogger;
+}
+```
+
+#### Resolution semantics
+
+- **Claim:** a model ID is a pseudomodel **iff** some router claims it via `provides` (exact match) or `match(id)`. Registry membership — not a prefix — is the source of truth. The exported `isPseudoModel(model, routers)` helper exposes the same check. A non-claimed `model` is used verbatim (no routing).
+- **First claimer wins**, in array order (`provides` exact, else `match`). A `match` that throws is treated as "does not claim" so a misbehaving router can never crash claim detection.
+- **Depth-1 guard:** if a router resolves to _another_ pseudomodel, the chain is rejected (no pseudo→pseudo loops); the run falls back to `defaultModel` and logs a warning.
+- **Fail-safe:** any throw in `route()` (or a depth-guard rejection) falls back to `defaultModel`, logs at `warn`, and still emits the `router_decision` event with `fellBack: true`. A routing failure **never** crashes the run.
+- **Stickiness:** default `sticky: true` — the first decision for a pseudomodel is cached for the run and reused on later turns (protects the upstream prompt cache + keeps cost predictable). `sticky: false` re-decides every turn. The cache is keyed by `(pseudoModel, phase)`, so the main `'turn'` pass and the `'compaction'` pass route independently — a run can pin a cheap summarizer for compaction while the main turn rides a different model. Fallbacks are never cached (a transient failure is re-decided next turn).
+
+#### Naming convention
+
+Pseudomodel IDs are arbitrary strings, but the recommended shape is `auto/…` or `router/…` (e.g. `auto/coding`, `router/default`). It mirrors OpenRouter's `vendor/model` shape, reads well in model pickers, and won't collide with real model IDs.
+
+#### The `router_decision` event
+
+Every resolution emits a `router_decision` `AgentCoreEvent` (also exported standalone as `RouterDecisionEvent`):
+
+```ts
+for await (const event of run) {
+  if (event.type === 'router_decision') {
+    // { pseudoModel, resolvedModel, turn, phase, reason?, routerName, fellBack }
+    console.log(`[router] ${event.pseudoModel} → ${event.resolvedModel} (${event.reason ?? '—'})`);
+  }
+}
+```
+
+A `'turn'` event is yielded just before that cycle's `turn_start`; a sticky route emits it only on the first cycle that resolves (the cached decision short-circuits routing on later cycles), while a `sticky: false` route re-emits every cycle. The `'compaction'` event trails the run (auto-compaction runs post-loop in the generator's `finally`), so consumers that `break` early on `stream_complete` may not observe it.
+
+#### `createRuleRouter`
+
+A synchronous, no-network factory: walk an ordered list of rules and route to the first whose conditions **all** hold (logical AND), else the configured `defaultModel`. Conditions: `minTokens` / `maxTokens` (over `estimatedTokens`), `hasTool` (a name or list, all must be visible), `keyword` (case-insensitive string, list-of-strings ANY-match, or a `RegExp` over instructions + input), and a `when(ctx)` escape hatch over the full context. A rule with no conditions matches unconditionally, so it can serve as a terminal catch-all. Cheap enough to run every turn; never needs `init()`. See the example at the top of this section.
+
+#### `createClassifierRouter`
+
+A factory that asks a cheap model to **label** the request, then maps the label to a concrete model via a supplied `label → model` table. `init()` warms one client; `route()` issues a single classification `callModel` and resolves through the map, falling back to `defaultLabel` when the call throws or names no known label.
+
+```ts
+import { createClassifierRouter } from '@wolpertingerlabs/openrouter-agent-harness';
+
+const router = createClassifierRouter({
+  provides: ['auto/smart'],
+  classifierModel: 'google/gemini-2.5-flash', // default; keep it cheap
+  models: {
+    coding: 'anthropic/claude-sonnet-4',
+    reasoning: 'openai/o3',
+    chat: 'google/gemini-2.5-flash',
+  },
+  defaultLabel: 'chat', // used on classification failure; must be a key of `models`
+});
+```
+
+**Cost note.** Each non-sticky decision (or the first sticky one) issues one extra `callModel` against `classifierModel`. With the default `sticky: true` that classification fires **once** and the chosen model is pinned for the rest of the run, amortizing the cost; only set `sticky: false` when per-turn re-routing is worth a classification call every turn. Keep `classifierModel` cheap.
+
+> **`modelParams` caveat.** A decision may carry per-route `modelParams` (e.g. `reasoning.effort`) merged into the request. If the routed model rejects a param, that surfaces as a normal SDK error — it is documented, not silently swallowed.
 
 ## Tools shipped with the library
 
