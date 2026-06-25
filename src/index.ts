@@ -6,6 +6,7 @@ export type {
   CanUseTool,
   CanUseToolContext,
   CanUseToolResult,
+  CompactionResult,
   OnHook,
 } from './agent.js';
 export { permissionModeToCanUseTool } from './permission-modes.js';
@@ -107,6 +108,7 @@ export {
   COMPACTION_FAILURE_LIMIT,
   COMPACTION_MIN_SHRINK_RATIO,
   COMPACTION_PROMPT,
+  COMPACTION_SUMMARY_MARKER,
   CHARS_PER_TOKEN,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   DEFAULT_KEEP_BUDGET_MIN_TOKENS,
@@ -127,6 +129,8 @@ export {
   PRUNE_STORED_MARKER_PREFIX,
   SUMMARIZER_INPUT_RESERVE_TOKENS,
   SUMMARY_TOOL_OUTPUT_MAX_CHARS,
+  USER_MESSAGES_KEEP_TOKENS,
+  collectRecentUserMessages,
   estimateInstructionsAndToolsTokens,
   estimateMessagesCharLength,
   getModelContextWindow,

@@ -2,7 +2,7 @@ import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isT
 import { join } from 'node:path';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { COMPACTION_FAILURE_LIMIT, COMPACTION_MIN_SHRINK_RATIO, COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_PRUNE_PROTECTED_TOOLS, MAX_SUMMARIZER_TRIM_RETRIES, PRUNE_CLEARED_MARKER, PRUNE_REDERIVABLE_TOOLS, estimateInstructionsAndToolsTokens, getModelContextWindow, isContextOverflowError, partitionMessages, planToolOutputPrune, pruneStoredMarker, renderMessagesForSummary, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, resolveKeepBudgetTokens, resolveSummarizerInputBudgetChars, serializeMessagesForEstimate, } from './compaction.js';
+import { COMPACTION_FAILURE_LIMIT, COMPACTION_MIN_SHRINK_RATIO, COMPACTION_PROMPT, COMPACTION_SUMMARY_MARKER, CHARS_PER_TOKEN, DEFAULT_PRUNE_PROTECTED_TOOLS, MAX_SUMMARIZER_TRIM_RETRIES, PRUNE_CLEARED_MARKER, PRUNE_REDERIVABLE_TOOLS, collectRecentUserMessages, estimateInstructionsAndToolsTokens, getModelContextWindow, isContextOverflowError, partitionMessages, planToolOutputPrune, pruneStoredMarker, renderMessagesForSummary, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, resolveKeepBudgetTokens, resolveSummarizerInputBudgetChars, serializeMessagesForEstimate, } from './compaction.js';
 import { ModelContextLengthCache } from './openrouter-api.js';
 import { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 import { allTools } from './tools/index.js';
@@ -178,6 +178,7 @@ function resolveOptions(opts) {
         autoPrune: opts.autoPrune ?? true,
         ...(opts.pruneThreshold !== undefined && { pruneThreshold: opts.pruneThreshold }),
         pruneProtectedTools: opts.pruneProtectedTools ?? DEFAULT_PRUNE_PROTECTED_TOOLS,
+        ...(opts.compactionModel !== undefined && { compactionModel: opts.compactionModel }),
         ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
         autoDiscoverMcp: opts.autoDiscoverMcp ?? false,
         enableToolSearch: opts.enableToolSearch ?? false,
@@ -452,11 +453,11 @@ export class OpenRouterAgentRun {
      * leaves the original state untouched and re-throws so the caller can
      * decide how to recover.
      */
-    async compact(reason = 'manual') {
+    async compact(reason = 'manual', options) {
         if (this.#isIterating) {
             throw new Error('Cannot call compact() while iterate() is in progress — see the Mid-run safety note in the README.');
         }
-        await this.#performCompaction(reason);
+        return this.#performCompaction(reason, options);
     }
     /**
      * Phase 7.1: the guard-free compaction body. {@link compact} delegates here
@@ -467,13 +468,13 @@ export class OpenRouterAgentRun {
      * The run-end auto-trigger in `iterate()`'s `finally` likewise routes
      * through {@link compact} only after clearing `#isIterating`.
      */
-    async #performCompaction(reason) {
+    async #performCompaction(reason, options) {
         const state = await this.stateAccessor.load();
         if (!state)
-            return;
+            return null;
         const rawMessages = state.messages;
         if (!Array.isArray(rawMessages) || rawMessages.length === 0)
-            return;
+            return null;
         // Phase 7.3: circuit breaker. After COMPACTION_FAILURE_LIMIT consecutive
         // AUTO-compaction failures on this session, stop auto-firing — a wedged
         // summarizer must not burn a model call on every run end (Claude Code's
@@ -488,7 +489,7 @@ export class OpenRouterAgentRun {
                 message: 'auto_compaction_breaker_open',
                 context: { sessionId: this.opts.sessionId, consecutiveFailures: failureCount },
             });
-            return;
+            return null;
         }
         // Phase 7.2: explicit keepRecentTurns keeps the last N TURNS verbatim;
         // when omitted, the keep tail is token-budgeted against the model's
@@ -500,7 +501,7 @@ export class OpenRouterAgentRun {
                 contextWindowTokens: getModelContextWindow(this.opts.model, this.opts.modelContextWindows),
             });
         if (summarize.length === 0)
-            return;
+            return null;
         await this.safeFireHook('PreCompact', {
             event: 'PreCompact',
             messages: summarize,
@@ -511,6 +512,11 @@ export class OpenRouterAgentRun {
                 }),
             reason,
         });
+        // Phase 7.5: optional caller-supplied focus (Claude Code `/compact
+        // <focus>`) rides as an addendum to the structured prompt.
+        const summarizerInstructions = options?.instructions !== undefined
+            ? `${COMPACTION_PROMPT}\n\nAdditional focus requested by the caller — weight the summary toward: ${options.instructions}`
+            : COMPACTION_PROMPT;
         // Phase 7.3: render the prefix as a readable role-labelled transcript
         // (truncated tool outputs, encrypted reasoning stripped) and cap it to
         // the summarizer's own input budget — the summarize call must not itself
@@ -532,7 +538,7 @@ export class OpenRouterAgentRun {
         let attempt = 0;
         for (;;) {
             try {
-                summaryText = await this.#summarizeOnce(rendered);
+                summaryText = await this.#summarizeOnce(rendered, summarizerInstructions);
                 break;
             }
             catch (err) {
@@ -549,12 +555,19 @@ export class OpenRouterAgentRun {
                 rendered = renderMessagesForSummary(toSummarize);
             }
         }
+        // Phase 7.5: the summary message is marked with COMPACTION_SUMMARY_MARKER
+        // so repeat compactions exclude prior summaries from the verbatim
+        // user-message keep set (no summary-of-summary nesting).
         const summaryMessage = {
             type: 'message',
             role: 'developer',
-            content: `[Compacted prior context]\n${summaryText}`,
+            content: `${COMPACTION_SUMMARY_MARKER}\n${summaryText}`,
         };
-        const nextMessages = [summaryMessage, ...keep];
+        // Phase 7.5: user messages are sacred — preserve the recent ones from the
+        // summarized prefix VERBATIM (newest-first ≤20k tokens, Codex shape),
+        // re-inserted chronologically between the summary and the keep tail.
+        const keptUserMessages = collectRecentUserMessages(summarize);
+        const nextMessages = [summaryMessage, ...keptUserMessages, ...keep];
         // Phase 7.3: inflation check (Gemini). If the rewritten state is not
         // meaningfully smaller than the original, restore nothing (we have not
         // saved yet), record a failed attempt, and surface the failure — a
@@ -577,10 +590,25 @@ export class OpenRouterAgentRun {
         delete nextState.pendingToolCalls;
         delete nextState.unsentToolResults;
         delete nextState.partialResponse;
-        // Phase 7.3: any successful compaction (auto or manual) closes the
-        // breaker.
+        // Phase 7.3: any successful compaction (auto or manual) closes the breaker.
         delete nextState.compactionFailureCount;
         await this.stateAccessor.save(nextState);
+        // Phase 7.5: structured result returned to the caller and carried by the
+        // live `compaction` event + PostCompact hook. Token figures are chars/4
+        // estimates of the persisted history before/after the rewrite.
+        const compactionResult = {
+            reason,
+            droppedMessages: summarize.length,
+            preEstimatedTokens: Math.ceil(prevChars / CHARS_PER_TOKEN),
+            postEstimatedTokens: Math.ceil(nextChars / CHARS_PER_TOKEN),
+            summaryText,
+        };
+        // Phase 7.5: the symmetric bookend to PreCompact — fires once the state
+        // rewrite is durable.
+        await this.safeFireHook('PostCompact', {
+            event: 'PostCompact',
+            ...compactionResult,
+        });
         if (this.persistSession) {
             await logTranscriptCompact({
                 logsRoot: this.opts.logsRoot,
@@ -590,23 +618,29 @@ export class OpenRouterAgentRun {
                 summaryText,
             });
         }
+        return compactionResult;
     }
     /**
      * Phase 7.3: one summarizer attempt — an isolated single-shot `callModel`
-     * over the rendered transcript. Extracted from {@link compact} so the
-     * drop-oldest retry loop can re-issue the call with a shorter input.
+     * over the rendered transcript. Extracted from {@link #performCompaction} so
+     * the drop-oldest retry loop can re-issue the call with a shorter input.
+     * Phase 7.5: summarizes on {@link OpenRouterAgentRunOptions.compactionModel}
+     * when set (default: the run's model) and takes the resolved `instructions`
+     * (the structured prompt plus any caller-supplied focus addendum).
      */
-    async #summarizeOnce(rendered) {
+    async #summarizeOnce(rendered, instructions) {
         const client = this.createOpenRouterClient();
         const compactSessionId = `${this.opts.sessionId}:compact:${randomUUID()}`;
         const result = client.callModel({
             // Same passthrough as the main cycle; spread first so the structural
             // fields and `cacheControl` below win on conflict.
             ...this.opts.modelParams,
-            model: this.opts.model,
+            // Phase 7.5: summaries are a mechanical condensation task — a cheaper
+            // model can do them (compactionModel); default stays the run's model.
+            model: this.opts.compactionModel ?? this.opts.model,
             sessionId: compactSessionId,
             input: rendered,
-            instructions: COMPACTION_PROMPT,
+            instructions,
             // Compaction prompts are exactly the kind of large reusable prefix that
             // benefits from auto prompt caching. Inherit the run's `cacheControl`
             // when set; omit when unset (preserves prior behavior).
@@ -926,7 +960,40 @@ export class OpenRouterAgentRun {
             // Internal entry point (not the public `compact()`): the mid-run caller
             // runs INSIDE iterate() with `#isIterating` set, and the run-end caller
             // has already cleared it — both must bypass the public iter-race guard.
-            await this.#performCompaction('auto');
+            return await this.#performCompaction('auto');
+        }
+        return null;
+    }
+    /**
+     * Phase 7.5: the run-end auto-compaction entry shared by the happy path
+     * (before `stream_complete`, where the result feeds the live `compaction`
+     * event) and the `finally` fallback (consumer abandoned the stream mid-run).
+     * Gates on {@link OpenRouterAgentRunOptions.autoCompact}, then delegates to
+     * {@link #autoCompactWithPrune} so the zero-LLM prune tier (7.4) runs first
+     * and the summarizer fires only if the history is still over the compaction
+     * threshold. Returns the {@link CompactionResult} when a compaction ran,
+     * `null` when the trigger is off / the threshold is not crossed / the
+     * summarizer failed (failures are logged and swallowed — the run must end
+     * cleanly regardless).
+     */
+    async #maybeAutoCompact(compactionSignalled) {
+        // Phase 7.1: skip when the session is not expected to resume — a
+        // `persistSession: false` run has no on-disk state to condense for a
+        // future run, so paying for a summarizer call at run end is pure waste.
+        if (!this.opts.autoCompact || !this.persistSession)
+            return null;
+        try {
+            // `compactionSignalled` is the run-end real-token trigger
+            // (`pendingMidRunCompaction`). The mid-run loop top consumes that flag
+            // when it compacts a non-final cycle, so passing it here (rather than
+            // re-checking the threshold) means a run never double-compacts the same
+            // settled history — the 7.4 prune tier still fires on the lower
+            // `pruneThreshold` even when the compaction signal is unset.
+            return await this.#autoCompactWithPrune(compactionSignalled);
+        }
+        catch (err) {
+            this.opts.logger?.('error', 'Auto-compaction failed', { error: err });
+            return null;
         }
     }
     /**
@@ -1100,6 +1167,12 @@ export class OpenRouterAgentRun {
         // stream throw, abort). The happy-path arm assigns the result of
         // {@link deriveCompletionStatus}.
         let status = 'error';
+        // Phase 7.5: set once the happy path has run the auto-compaction check
+        // (before yielding stream_complete, so the live `compaction` event lands
+        // in-stream). When the consumer abandons the stream mid-run the happy
+        // path never executes — the `finally` fallback runs the check instead
+        // (hooks fire; no event is observable there).
+        let autoCompactAttempted = false;
         // Captured when a `response.failed` event flows through the SDK
         // broadcaster. We intentionally do NOT throw from inside the for-await
         // loop because that would close the SDK generator (via `iter.return()`)
@@ -1672,7 +1745,19 @@ export class OpenRouterAgentRun {
                             // next cycle's `callModel({ state })` resumes from the
                             // condensed history with no further reload needed (the
                             // accessor is the source of truth).
-                            await this.#autoCompactWithPrune(true);
+                            const midRunResult = await this.#autoCompactWithPrune(true);
+                            // Phase 7.5: a mid-run compaction happens inside the live stream
+                            // — emit the same `compaction` event from the loop top (7.5 PR
+                            // note) so consumers see it in-stream, not just on reload.
+                            if (midRunResult !== null) {
+                                yield {
+                                    type: 'compaction',
+                                    reason: midRunResult.reason,
+                                    droppedMessages: midRunResult.droppedMessages,
+                                    preEstimatedTokens: midRunResult.preEstimatedTokens,
+                                    postEstimatedTokens: midRunResult.postEstimatedTokens,
+                                };
+                            }
                         }
                         catch (err) {
                             logger?.('error', 'Mid-run auto-compaction failed', { error: err });
@@ -2304,6 +2389,26 @@ export class OpenRouterAgentRun {
             if (status === 'error') {
                 status = 'success';
             }
+            // Phase 7.5: run the auto-compaction HERE — after the loop has fully
+            // drained (no SDK stream active, `state.save()` settled) but BEFORE
+            // `stream_complete` is yielded — so the live `compaction` event lands
+            // in-stream where consumers can see it. The iter guard is cleared
+            // first (the same clearance the `finally` block performs); the
+            // `finally` fallback below still covers consumers that abandoned the
+            // stream mid-run (no event is observable there, but the PostCompact
+            // hook fires regardless).
+            this.#isIterating = false;
+            autoCompactAttempted = true;
+            const compactionResult = await this.#maybeAutoCompact(pendingMidRunCompaction);
+            if (compactionResult !== null) {
+                yield {
+                    type: 'compaction',
+                    reason: compactionResult.reason,
+                    droppedMessages: compactionResult.droppedMessages,
+                    preEstimatedTokens: compactionResult.preEstimatedTokens,
+                    postEstimatedTokens: compactionResult.postEstimatedTokens,
+                };
+            }
             // Stage the SessionEnd / Stop payloads BEFORE yielding so a consumer
             // that `break`s on `stream_complete` still gets the trailing hooks
             // fired from finally. (Generator return() resumes at the yield and
@@ -2435,36 +2540,19 @@ export class OpenRouterAgentRun {
             // Clear the iter guard BEFORE the auto-compact call so the auto-trigger
             // (which calls this.compact('auto')) does not throw on its own guard.
             this.#isIterating = false;
-            // Phase 5.1 / 7.1: auto-compaction fires here (in the generator's
-            // `finally`) so it triggers on any non-error completion regardless of
-            // whether the consumer drained to end-of-stream or `break`ed early on
-            // `stream_complete` — the generator's `return()` still runs finally.
-            // `max_turns` / `max_budget` runs still produced a useful turn worth
-            // condensing. Errors from the summarizer call are caught so the
-            // SessionEnd / Stop hook bracket below still fires.
-            //
-            // Phase 7.1 + 7.4: the run-end intervention reuses the SAME mid-run
-            // real-token signal. The final cycle's threshold comparison (step 6 in
-            // the loop) sets `pendingMidRunCompaction`; when the loop exited before a
-            // NEXT cycle consumed it (input exhausted / stop condition), the prune +
-            // compaction happen here. The zero-LLM prune tier (7.4) runs first via
-            // {@link #autoCompactWithPrune} and can skip the summarizer entirely; it
-            // also fires on the optional lower `pruneThreshold` even when the
-            // compaction signal is unset.
-            //
-            // Gating: skip when the session is not expected to resume — a
-            // `persistSession: false` run has no on-disk state to condense for a
-            // future run, so paying for a summarizer call at run end is pure waste
-            // (the common cron-one-shot footgun). `status !== 'error'` keeps the
-            // run-end summarizer off the failure path.
-            if (this.opts.autoCompact && status !== 'error' && persistSession) {
-                // No flag reset — `finally` is the last code to touch it.
-                try {
-                    await this.#autoCompactWithPrune(pendingMidRunCompaction);
-                }
-                catch (err) {
-                    logger?.('error', 'Auto-compaction failed', { error: err });
-                }
+            // Phase 5.1 / 7.5: auto-compaction normally runs on the happy path
+            // BEFORE `stream_complete` (so its live `compaction` event lands
+            // in-stream — see `autoCompactAttempted` above). This `finally`
+            // fallback covers the remaining exits: a consumer that `break`ed out
+            // mid-run (the generator's `return()` lands here without reaching the
+            // happy-path check). `max_turns` / `max_budget` runs still produced a
+            // useful turn worth condensing. The zero-LLM prune tier (7.4) runs
+            // first via {@link #maybeAutoCompact} → {@link #autoCompactWithPrune};
+            // errors from the summarizer call are caught inside #maybeAutoCompact so
+            // the SessionEnd / Stop hook bracket below still fires. persistSession /
+            // autoCompact gating lives inside #maybeAutoCompact.
+            if (!autoCompactAttempted && status !== 'error') {
+                await this.#maybeAutoCompact(pendingMidRunCompaction);
             }
             if (sessionEndPayload) {
                 await safeFireHook('SessionEnd', sessionEndPayload);

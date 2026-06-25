@@ -143,6 +143,38 @@ safetyBuffer` (absolute-buffer shape, à la Claude Code / opencode),
     `pruneThreshold` (lower prune-only trigger, same currency as
     `compactionThreshold`), `pruneProtectedTools`. New pure exports:
     `planToolOutputPrune`, `pruneStoredMarker`, marker/limit constants.
+- **Context compaction v2 — Card 7.5: summary quality & ergonomics.**
+  - **Structured summary prompt.** `COMPACTION_PROMPT` v2 replaces the
+    single-narrative v1 with eight numbered sections (primary request &
+    intent; key decisions & rationale; files/paths/identifiers with
+    load-bearing snippets; errors & fixes incl. explicit user corrections;
+    all user messages; pending tasks; current state; next step quoted
+    VERBATIM — Claude Code's anti-drift device). Same exported constant,
+    same raw-text contract.
+  - **Recent user messages preserved verbatim.** The rebuilt history is now
+    `[summary, ...verbatimUserMessages, ...keepTail]`: the summarized
+    prefix's `user`-role messages survive newest-first under a 20k-token cap
+    (`USER_MESSAGES_KEEP_TOKENS`, Codex shape; new export
+    `collectRecentUserMessages`). Prior summaries are excluded by the
+    `COMPACTION_SUMMARY_MARKER` content prefix, so repeat compactions never
+    nest a summary-of-summary.
+  - **`compactionModel` option** — summarize on a cheaper model (aider
+    weak-model / opencode compaction-agent precedent); defaults to the
+    run's `model`.
+  - **Focused manual compaction.** `compact(reason, { instructions })`
+    appends a caller-supplied focus addendum to the structured prompt
+    (Claude Code `/compact <focus>`); the existing signature is unchanged.
+    `compact()` now resolves to a `CompactionResult`
+    (`{ reason, droppedMessages, preEstimatedTokens, postEstimatedTokens,
+summaryText }`; `null` on no-op).
+  - **Live `compaction` core event + `PostCompact` hook.** Auto-compactions
+    emit `{ type: 'compaction', reason, droppedMessages,
+preEstimatedTokens, postEstimatedTokens }` in-stream immediately BEFORE
+    `stream_complete` (the run-end check moved onto the happy path so the
+    event is observable; a `finally` fallback still covers consumers that
+    abandoned the stream mid-run). Every successful compaction (auto or
+    manual) also fires the new audit-only `PostCompact` hook — the
+    symmetric bookend to `PreCompact`.
 
 - **`reasoning_delta` core event — live reasoning/thinking streaming.**
   Reasoning models that stream plaintext reasoning over the OR Responses

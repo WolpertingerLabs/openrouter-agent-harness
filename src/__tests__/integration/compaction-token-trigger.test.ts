@@ -93,6 +93,11 @@ async function* multiInput(...contents: string[]): AsyncIterable<UserInput> {
   for (const content of contents) yield { content };
 }
 
+// [u,a]×4 = 4 turns. Large enough that, under the Phase 7.5 verbatim
+// user-message preservation, an auto-compaction still meaningfully shrinks the
+// history (the summarized assistant turns are dropped) and so clears the Phase
+// 7.3 inflation check — a 3-turn seed kept ~5/6 messages and was (correctly)
+// rejected as non-shrinking once verbatim users were re-introduced.
 const longMessages = (): unknown[] => [
   { role: 'user', content: 'a'.repeat(100) },
   { role: 'assistant', content: 'b'.repeat(100) },
@@ -100,6 +105,8 @@ const longMessages = (): unknown[] => [
   { role: 'assistant', content: 'd'.repeat(100) },
   { role: 'user', content: 'e'.repeat(100) },
   { role: 'assistant', content: 'f'.repeat(100) },
+  { role: 'user', content: 'g'.repeat(100) },
+  { role: 'assistant', content: 'h'.repeat(100) },
 ];
 
 let logsRoot: string;
@@ -173,15 +180,17 @@ describe('integration: Phase 7.1 real-token mid-run compaction', () => {
       'auto',
     );
 
-    // State was rewritten with the summary + last 2 TURNS. Phase 7.2 turn
-    // granularity: keepRecentTurns:2 over the [u,a]×3 seed keeps the final
-    // two turns ([c,d,e,f] = 4 messages), so the rebuilt history is
-    // [summary, ...4] = 5 messages and the kept tail starts at a user-role
-    // turn boundary (never an orphaned function_call_output / reasoning item).
+    // State was rewritten with the summary, then (Phase 7.5) the summarized
+    // prefix's user messages preserved VERBATIM, then (Phase 7.2 turn
+    // granularity) the last 2 TURNS. keepRecentTurns:2 over the [u,a]×4 seed
+    // keeps the final two turns (4 messages); the summarized prefix [u,a,u,a]
+    // contributes its 2 user messages verbatim, so the rebuilt history is
+    // [summary, 2 verbatim users, ...4 keep] = 7 messages and the first kept
+    // message after the summary is a user-role turn boundary.
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
     expect(persisted.messages[0].role).toBe('developer');
     expect(persisted.messages[0].content).toContain('MID-RUN-SUMMARY');
-    expect(persisted.messages.length).toBe(5);
+    expect(persisted.messages.length).toBe(7);
     expect(persisted.messages[1].role).toBe('user');
   });
 

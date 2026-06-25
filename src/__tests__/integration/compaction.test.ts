@@ -205,21 +205,28 @@ describe('integration: context compaction', () => {
     expect(typeof compactCallArgs.input).toBe('string');
 
     // The persisted state.json was rewritten: leading summary message, then
-    // the last 2 TURNS (4 messages) preserved verbatim, previousResponseId
-    // cleared. The tail starts at a turn boundary (user message).
+    // the recent user messages from the summarized prefix preserved VERBATIM
+    // (Phase 7.5), then the last 2 TURNS (Phase 7.2 turn-boundary keep tail),
+    // previousResponseId cleared. [u,a]×4 seed, keepRecentTurns: 2 → summarize
+    // = [0..3] (its user messages 0,2 kept verbatim), keep = last 2 turns
+    // [4..7].
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
     expect(persisted.previousResponseId).toBeUndefined();
-    expect(persisted.messages.length).toBe(5); // [summary, ...last 2 turns]
+    expect(persisted.messages.length).toBe(7); // [summary, 2 verbatim users, ...last 2 turns]
     expect(persisted.messages[0]).toMatchObject({
       type: 'message',
       role: 'developer',
     });
     expect(persisted.messages[0].content).toContain('SUMMARY-OF-PRIOR-TURNS');
-    // Last two turns of the seed survive verbatim, starting at a user message.
-    expect(persisted.messages[1]).toEqual(longMessages[4]);
-    expect(persisted.messages[2]).toEqual(longMessages[5]);
-    expect(persisted.messages[3]).toEqual(longMessages[6]);
-    expect(persisted.messages[4]).toEqual(longMessages[7]);
+    // Phase 7.5 + 7.2: the summarized prefix's user messages survive verbatim
+    // and in order (indices 0, 2), then the last 2 TURNS of the seed (the
+    // turn-boundary keep tail, indices 4..7).
+    expect(persisted.messages[1]).toEqual(longMessages[0]);
+    expect(persisted.messages[2]).toEqual(longMessages[2]);
+    expect(persisted.messages[3]).toEqual(longMessages[4]);
+    expect(persisted.messages[4]).toEqual(longMessages[5]);
+    expect(persisted.messages[5]).toEqual(longMessages[6]);
+    expect(persisted.messages[6]).toEqual(longMessages[7]);
   });
 
   it('compaction callModel inherits the run-level `cacheControl` when set', async () => {
@@ -362,11 +369,14 @@ describe('integration: context compaction', () => {
   });
 
   it('manual compact() works regardless of autoCompact and clears previousResponseId', async () => {
+    // Assistant turns are large so that summarizing them away (they are NOT
+    // kept verbatim — only user messages are, Phase 7.5) shrinks the history
+    // enough to clear the Phase 7.3 inflation check.
     const seedMessages = [
       { role: 'user', content: 'first' },
-      { role: 'assistant', content: 'reply' },
+      { role: 'assistant', content: 'reply '.repeat(100) },
       { role: 'user', content: 'second' },
-      { role: 'assistant', content: 'reply 2' },
+      { role: 'assistant', content: 'reply 2 '.repeat(100) },
       { role: 'user', content: 'third' },
     ];
     const statePath = await seedState({
@@ -404,10 +414,13 @@ describe('integration: context compaction', () => {
 
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
     expect(persisted.previousResponseId).toBeUndefined();
-    expect(persisted.messages.length).toBe(2);
+    // Phase 7.5: [summary, 2 verbatim users from the prefix, keep tail].
+    expect(persisted.messages.length).toBe(4);
     expect(persisted.messages[0].role).toBe('developer');
     expect(persisted.messages[0].content).toContain('MANUAL-SUMMARY');
-    expect(persisted.messages[1]).toEqual(seedMessages[4]);
+    expect(persisted.messages[1]).toEqual(seedMessages[0]);
+    expect(persisted.messages[2]).toEqual(seedMessages[2]);
+    expect(persisted.messages[3]).toEqual(seedMessages[4]);
   });
 
   it('logs and swallows summarizer failures during auto-compaction without breaking the stream', async () => {
@@ -549,11 +562,12 @@ describe('integration: context compaction', () => {
     const payload = preCompact!.payload as Extract<HookPayload, { event: 'PreCompact' }>;
     expect(payload.reason).toBe('auto');
 
-    // And the state file was rewritten with the new summary. Phase 7.2:
-    // keepRecentTurns: 2 keeps the last 2 TURNS (4 messages) of the [u,a]×4
-    // seed.
+    // And the state file was rewritten with the new summary. Phase 7.2 + 7.5:
+    // the [u,a]×4 seed, keepRecentTurns: 2 → summarize [0..3] (user messages
+    // 0,2 kept verbatim), keep the last 2 TURNS [4..7], so the rebuild is
+    // [summary, 2 verbatim users, ...last 2 turns] = 7 messages.
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
-    expect(persisted.messages.length).toBe(5);
+    expect(persisted.messages.length).toBe(7);
     expect(persisted.messages[0].role).toBe('developer');
     expect(persisted.messages[0].content).toContain('BREAK-PATH-SUMMARY');
 
