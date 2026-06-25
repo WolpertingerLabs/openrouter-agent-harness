@@ -9,6 +9,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Context compaction v2 — Card 7.1: real-token trigger + dynamic context
+  windows.** Auto-compaction no longer waits for run end and no longer relies
+  solely on a `chars/4` estimate over the message array:
+  - **Mid-run trigger.** After each `callModel` cycle, the run compares the
+    server-reported real `usage.inputTokens` against a token-denominated
+    threshold. When it crosses, compaction is marked and performed at the top
+    of the next cycle (Codex-style "mark-full → compact at the next turn"),
+    inside the same `iterate()` — so a long multi-input agentic run that
+    drains many turns is protected before it can overflow. The existing
+    public `compact()` mid-iterate guard semantics are unchanged. The run-end
+    check reuses the same signal (fires only when the final cycle crossed the
+    threshold), so a run never double-compacts the same history.
+  - **Token-denominated threshold.** `contextWindow − outputReserve −
+safetyBuffer` (absolute-buffer shape, à la Claude Code / opencode),
+    floored at 25% of the window, where `outputReserve` (default ~20k tokens)
+    guarantees the summarizer call itself has room to respond. New options
+    `outputReserveTokens` / `safetyBufferTokens`; the merged
+    `resolveCompactionThresholdTokens` resolver gains an optional
+    `reserveOpts` parameter (prior ratio behavior preserved when omitted).
+  - **Dynamic context windows.** The active model's window is resolved with
+    the precedence: explicit `contextWindowTokens` (new option) → live OR
+    `/api/v1/models` `context_length` lookup → static `MODEL_CONTEXT_WINDOWS`
+    table (with per-run `modelContextWindows` overrides) → 128k fallback. The
+    live lookup (`ModelContextLengthCache`, exported) is lazy, per-base-URL
+    TTL-cached, and **failure-tolerant** — a network error falls back to the
+    static table, so compaction never gains a hard network dependency.
+  - **Cold-start estimate.** On the first turn of a fresh session (no real
+    usage sample yet), the fallback estimate now counts the `instructions`
+    block and serialized tool schemas
+    (`estimateInstructionsAndToolsTokens`, exported), not just the message
+    history — the two large prefix components a cron-style session sends on
+    every request.
+  - **`persistSession` gating.** Both the mid-run and run-end compaction
+    triggers are skipped for `persistSession: false` runs (no resume path →
+    pure waste), fixing the cron-one-shot footgun of paying for a summary the
+    session never uses.
+  - Back-compat: an explicit `compactionThreshold` still wins outright
+    (chars, or tokens with a `tokenCounter`) and bypasses the real-token path
+    (and the `/models` lookup) entirely.
+
 - **`reasoning_delta` core event — live reasoning/thinking streaming.**
   Reasoning models that stream plaintext reasoning over the OR Responses
   wire (`response.reasoning_text.delta` SSE events) now surface it live:

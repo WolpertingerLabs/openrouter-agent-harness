@@ -1,7 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { accountInfo, supportedModels } from './openrouter-api.js';
+import {
+  accountInfo,
+  supportedModels,
+  ModelContextLengthCache,
+  MODEL_CONTEXT_LENGTH_CACHE_TTL_MS,
+} from './openrouter-api.js';
 
 const FIXTURES = join(import.meta.dirname, '__tests__/fixtures/openrouter-api');
 
@@ -213,5 +218,138 @@ describe('supportedModels', () => {
     const models = await supportedModels({ apiKey: 'sk-test' });
 
     expect(models).toEqual([]);
+  });
+});
+
+describe('ModelContextLengthCache', () => {
+  it('exposes a sane default TTL constant', () => {
+    expect(MODEL_CONTEXT_LENGTH_CACHE_TTL_MS).toBe(10 * 60_000);
+  });
+
+  it('resolves context_length for a known model from the catalogue', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({ model: 'anthropic/claude-sonnet-4.5', apiKey: 'sk-test' });
+    expect(win).toBe(200000);
+  });
+
+  it("strips a leading '~' alias marker and re-tries", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({ model: '~openai/gpt-4o', apiKey: 'sk-test' });
+    expect(win).toBe(128000);
+  });
+
+  it('returns null for an unknown model', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({ model: 'nobody/unknown-9000', apiKey: 'sk-test' });
+    expect(win).toBeNull();
+  });
+
+  it('returns null (not throw) on a network error — failure-tolerant', async () => {
+    fetchMock.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({ model: 'anthropic/claude-sonnet-4.5', apiKey: 'sk-test' });
+    expect(win).toBeNull();
+  });
+
+  it('returns null (not throw) on a non-200 response', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({}, { status: 500 }));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({ model: 'anthropic/claude-sonnet-4.5', apiKey: 'sk-test' });
+    expect(win).toBeNull();
+  });
+
+  it('returns null on a malformed body (data not an array)', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse({ data: 'oops' }));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({ model: 'anthropic/claude-sonnet-4.5', apiKey: 'sk-test' });
+    expect(win).toBeNull();
+  });
+
+  it('ignores entries with a missing / non-positive context_length', async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse({
+        data: [
+          { id: 'a/zero', context_length: 0 },
+          { id: 'a/missing' },
+          { id: 'a/good', context_length: 64000 },
+        ],
+      }),
+    );
+    const cache = new ModelContextLengthCache();
+    expect(await cache.get({ model: 'a/zero', apiKey: 'sk-test' })).toBeNull();
+    // Same cache entry (one fetch) — subsequent lookups are memoized.
+    expect(await cache.get({ model: 'a/missing', apiKey: 'sk-test' })).toBeNull();
+    expect(await cache.get({ model: 'a/good', apiKey: 'sk-test' })).toBe(64000);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches the catalogue within the TTL (single fetch for repeated lookups)', async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    await cache.get({ model: 'anthropic/claude-sonnet-4.5', apiKey: 'sk-test' });
+    await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-fetches after the TTL expires', async () => {
+    let now = 0;
+    fetchMock.mockResolvedValue(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache({ ttlMs: 1000, now: () => now });
+    await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' });
+    now = 2000; // past the TTL
+    await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('does NOT cache a failed fetch (re-attempts on the next call)', async () => {
+    fetchMock
+      .mockRejectedValueOnce(new Error('blip'))
+      .mockResolvedValueOnce(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    expect(await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' })).toBeNull();
+    // Second call re-attempts (failure not pinned) and succeeds.
+    expect(await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' })).toBe(128000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('keys the cache by base URL (staging vs prod do not collide)', async () => {
+    fetchMock.mockResolvedValue(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' });
+    await cache.get({
+      model: 'openai/gpt-4o',
+      apiKey: 'sk-test',
+      baseUrl: 'https://staging.example.com/api/v1',
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenLastCalledWith(
+      'https://staging.example.com/api/v1/models',
+      expect.any(Object),
+    );
+  });
+
+  it('clear() forces a re-fetch', async () => {
+    fetchMock.mockResolvedValue(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' });
+    cache.clear();
+    await cache.get({ model: 'openai/gpt-4o', apiKey: 'sk-test' });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses a custom fetch impl when provided', async () => {
+    const customFetch = vi.fn().mockResolvedValue(mockResponse(readFixture('models-200.json')));
+    const cache = new ModelContextLengthCache();
+    const win = await cache.get({
+      model: 'openai/gpt-4o',
+      apiKey: 'sk-test',
+      fetchImpl: customFetch as unknown as typeof fetch,
+    });
+    expect(win).toBe(128000);
+    expect(customFetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 });

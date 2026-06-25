@@ -28,6 +28,26 @@ export const CHARS_PER_TOKEN = 4;
  */
 export const DEFAULT_THRESHOLD_RATIO = 0.8;
 /**
+ * Phase 7.1: default output reserve (in **tokens**) subtracted from the
+ * context window when the absolute-buffer threshold shape is requested (see
+ * {@link resolveCompactionThresholdTokens}'s `reserveOpts`). ~20k matches the
+ * shape adopted by Claude Code and opencode: this is the room the model needs
+ * to *respond* — and, critically, the room the summarizer call itself needs
+ * to emit its summary without overflowing. A bare ratio does not guarantee
+ * that on large windows.
+ */
+export const DEFAULT_OUTPUT_RESERVE_TOKENS = 20_000;
+/**
+ * Phase 7.1: default extra safety buffer (in **tokens**) added on top of the
+ * output reserve under the absolute-buffer threshold shape. Covers
+ * measurement slop — uncounted tool-schema growth between the threshold check
+ * and the next request, plus the gap between the server's `inputTokens`
+ * accounting and our estimate on the first turn. Claude Code carries a ~13k
+ * margin on a 200k window; we adopt a smaller flat 8k so narrow windows are
+ * not over-reserved into uselessness.
+ */
+export const DEFAULT_SAFETY_BUFFER_TOKENS = 8_000;
+/**
  * Conservative fallback context-window size (in tokens) used when the active
  * model is not present in {@link MODEL_CONTEXT_WINDOWS}. 128k matches the
  * smaller end of the modern frontier-model band and avoids overestimating
@@ -129,11 +149,57 @@ export function resolveCompactionThresholdChars(configured, model, overrides) {
  * threshold is `floor(getModelContextWindow(model, overrides) *
  * DEFAULT_THRESHOLD_RATIO)` — no chars-per-token translation, because the
  * comparison side is already a real token count.
+ *
+ * Phase 7.1: when `reserveOpts` is supplied AND no explicit `configured`
+ * threshold is set, the **absolute-buffer** shape is used instead of the bare
+ * ratio: `window − outputReserve − safetyBuffer` (Claude Code / opencode).
+ * The reserve guarantees the summarizer call itself has room to respond — a
+ * ratio alone does not on large windows. The result is floored at 25% of the
+ * window so a pathologically small / mis-resolved window never yields a
+ * non-positive (always-trigger) threshold; pass an explicit threshold to
+ * force-trigger every turn instead. When `reserveOpts` is omitted the prior
+ * ratio behavior is preserved exactly (back-compat with the merged callers).
  */
-export function resolveCompactionThresholdTokens(configured, model, overrides) {
+export function resolveCompactionThresholdTokens(configured, model, overrides, reserveOpts) {
     if (configured !== undefined)
         return configured;
-    return Math.floor(getModelContextWindow(model, overrides) * DEFAULT_THRESHOLD_RATIO);
+    const window = getModelContextWindow(model, overrides);
+    if (reserveOpts === undefined) {
+        return Math.floor(window * DEFAULT_THRESHOLD_RATIO);
+    }
+    const reserve = reserveOpts.outputReserveTokens ?? DEFAULT_OUTPUT_RESERVE_TOKENS;
+    const buffer = reserveOpts.safetyBufferTokens ?? DEFAULT_SAFETY_BUFFER_TOKENS;
+    const floor = Math.floor(window * 0.25);
+    return Math.max(floor, window - reserve - buffer);
+}
+/**
+ * Phase 7.1: cold-start input-token estimate for the first turn of a fresh
+ * session, when no real `usage.inputTokens` sample exists yet. The message
+ * heuristic misses the two large prefix components a cron-style session sends
+ * on every request — the `instructions` block and the serialized tool
+ * schemas — both of which can dominate the window before a single message is
+ * counted. Returns a **token** estimate (chars / {@link CHARS_PER_TOKEN}).
+ *
+ * `tools` is serialized defensively per-item; unserializable entries (cyclic
+ * test fixtures) contribute nothing, matching
+ * {@link serializeMessagesForEstimate}.
+ */
+export function estimateInstructionsAndToolsTokens(opts) {
+    let chars = opts.instructions?.length ?? 0;
+    if (Array.isArray(opts.tools)) {
+        for (const tool of opts.tools) {
+            try {
+                const piece = JSON.stringify(tool);
+                if (typeof piece === 'string')
+                    chars += piece.length;
+            }
+            catch {
+                // Unserializable tool descriptor — skip (defensive; real SDK tool
+                // schemas are always JSON-serializable).
+            }
+        }
+    }
+    return Math.ceil(chars / CHARS_PER_TOKEN);
 }
 /**
  * Canonical serialization of the SDK's `ConversationState.messages` field

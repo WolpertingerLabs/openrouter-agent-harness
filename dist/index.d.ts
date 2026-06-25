@@ -1,4 +1,4 @@
-export { OpenRouterAgentRun, DEFAULT_INSTRUCTIONS } from './agent.js';
+export { OpenRouterAgentRun, DEFAULT_INSTRUCTIONS, MODEL_CONTEXT_LENGTH_CACHE } from './agent.js';
 export type { OpenRouterAgentRunOptions, AgentLogger, AgentLoggerLevel, CanUseTool, CanUseToolContext, CanUseToolResult, OnHook, } from './agent.js';
 export { permissionModeToCanUseTool } from './permission-modes.js';
 export type { PermissionMode } from './permission-modes.js';
@@ -15,10 +15,10 @@ export { forkSession } from './session-fork.js';
 export type { ForkSessionOptions, ForkSessionResult } from './session-fork.js';
 export { createCheckpoint, listCheckpoints, restoreCheckpoint, encodePath, decodePath, MAX_CHECKPOINTS_PER_SESSION, } from './checkpoints.js';
 export type { Checkpoint, CheckpointFile, RestoreCheckpointResult, CheckpointLogger, } from './checkpoints.js';
-export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_KEEP_RECENT_TURNS, DEFAULT_THRESHOLD_RATIO, MODEL_CONTEXT_WINDOWS, estimateMessagesCharLength, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_KEEP_RECENT_TURNS, DEFAULT_OUTPUT_RESERVE_TOKENS, DEFAULT_SAFETY_BUFFER_TOKENS, DEFAULT_THRESHOLD_RATIO, MODEL_CONTEXT_WINDOWS, estimateInstructionsAndToolsTokens, estimateMessagesCharLength, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
 export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 export type { StallMonitor } from './stall.js';
-export { accountInfo, supportedModels } from './openrouter-api.js';
+export { accountInfo, supportedModels, ModelContextLengthCache, MODEL_CONTEXT_LENGTH_CACHE_TTL_MS, } from './openrouter-api.js';
 export type { AccountInfo, ModelInfo } from './openrouter-api.js';
 export { loadMcpConfig } from './mcp/config.js';
 export type { McpServerConfig, McpStdioServerConfig, McpHttpServerConfig, McpConfigScope, LoadMcpConfigOptions, } from './mcp/config.js';

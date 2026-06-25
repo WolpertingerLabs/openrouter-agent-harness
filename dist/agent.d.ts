@@ -1,5 +1,6 @@
 import { type Tool } from '@openrouter/agent';
 import type { AnthropicCacheControlDirective, ResponsesRequest } from '@openrouter/sdk/models';
+import { ModelContextLengthCache } from './openrouter-api.js';
 import { type SkillLoader } from './skills/index.js';
 import { type ServerToolConfig } from './tools/server-tools.js';
 import type { OnAskUserQuestion } from './tools/ask-user-question.js';
@@ -12,6 +13,14 @@ import { type ForkSessionResult } from './session-fork.js';
 import { type McpServerConfig } from './mcp/config.js';
 import type { LoadedPlugin } from './plugins/index.js';
 import { type UserInput } from './streaming-input.js';
+/**
+ * Phase 7.1: process-wide cache for the OR `/api/v1/models` context-window
+ * table. Shared across runs so a callboard cron firing one short session per
+ * minute resolves windows from memory after the first fetch. Failure-tolerant
+ * (network errors return `null` → static-table fallback), so compaction never
+ * gains a hard network dependency. Exported for test reset.
+ */
+export declare const MODEL_CONTEXT_LENGTH_CACHE: ModelContextLengthCache;
 /**
  * Default system instructions for the built-in code-editing agent. Exported so
  * library consumers can extend, prefix, or replace the string without
@@ -558,6 +567,35 @@ export interface OpenRouterAgentRunOptions {
      */
     tokenCounter?: (serializedMessages: string) => number;
     /**
+     * Phase 7.1: explicit context-window size (in **tokens**) for the active
+     * model. Highest-precedence window source for the Phase 7.1 mid-run
+     * trigger: explicit `contextWindowTokens` → live OR `/api/v1/models`
+     * `context_length` lookup → {@link modelContextWindows} override →
+     * static {@link MODEL_CONTEXT_WINDOWS} table → 128k fallback. The live
+     * lookup is lazy, TTL-cached, and failure-tolerant (a network error falls
+     * back to the static table — compaction never gains a hard network
+     * dependency). Inherited by spawned subagents.
+     */
+    contextWindowTokens?: number;
+    /**
+     * Phase 7.1: output reserve (in **tokens**) subtracted from the context
+     * window when deriving the mid-run token threshold
+     * (`contextWindow − outputReserveTokens − safetyBufferTokens`,
+     * absolute-buffer shape à la Claude Code / opencode). This is the room
+     * reserved for the model's response — and, critically, for the summarizer
+     * call itself. Defaults to {@link DEFAULT_OUTPUT_RESERVE_TOKENS} (≈20k).
+     * Ignored when an explicit `compactionThreshold` is supplied (it wins
+     * outright). Inherited by spawned subagents.
+     */
+    outputReserveTokens?: number;
+    /**
+     * Phase 7.1: extra safety buffer (in **tokens**) on top of
+     * {@link outputReserveTokens}, covering measurement slop. Defaults to
+     * {@link DEFAULT_SAFETY_BUFFER_TOKENS} (≈8k). Ignored when an explicit
+     * `compactionThreshold` is supplied. Inherited by spawned subagents.
+     */
+    safetyBufferTokens?: number;
+    /**
      * Phase 5.1: number of trailing messages (NOT strict turns — see
      * {@link partitionMessages} JSDoc for the granularity note) preserved
      * verbatim during compaction. Everything older is condensed into a single
@@ -858,6 +896,43 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      *   overrides applied to the window lookup.
      */
     private isOverCompactionThreshold;
+    /**
+     * Phase 7.1: resolve the active model's context window (in **tokens**) with
+     * the documented precedence:
+     *
+     *   explicit {@link OpenRouterAgentRunOptions.contextWindowTokens} → live
+     *   OR `/api/v1/models` lookup → static table / per-run
+     *   {@link OpenRouterAgentRunOptions.modelContextWindows} overrides via
+     *   {@link getModelContextWindow} → 128k fallback.
+     *
+     * The live lookup is lazy, cached ({@link MODEL_CONTEXT_LENGTH_CACHE}), and
+     * failure-tolerant — a network or parse error falls through to the static
+     * resolution, so compaction never gains a hard network dependency. Codex
+     * precedent: the static table is a fallback, not the source of truth.
+     */
+    private resolveContextWindowTokens;
+    /**
+     * Phase 7.1: decide whether observed input-token usage has crossed the
+     * auto-compaction threshold. `realInputTokens` is the server-reported
+     * `usage.inputTokens` from the latest response when available — the most
+     * accurate currency there is; on the first turn of a fresh session (no
+     * sample yet) the caller passes `null` and this method falls back to a
+     * chars/{@link CHARS_PER_TOKEN} estimate of the message history **plus**
+     * the otherwise-uncounted `instructions` + tool-schema prefix
+     * ({@link estimateInstructionsAndToolsTokens}).
+     *
+     * An explicit {@link OpenRouterAgentRunOptions.compactionThreshold} wins
+     * outright: the check delegates to {@link isOverCompactionThreshold}
+     * verbatim (chars without a `tokenCounter`, tokens with one — the merged
+     * v1 semantics) and the live `/models` lookup is never consulted.
+     *
+     * Otherwise the threshold takes the absolute-buffer shape
+     * `window − outputReserve − safetyBuffer` (floored at 25% of the window —
+     * see {@link resolveCompactionThresholdTokens}), with the window resolved
+     * by {@link resolveContextWindowTokens} so a live `/models` value actually
+     * takes effect.
+     */
+    private shouldCompactForRealTokens;
     /**
      * Abort the in-flight run. Fires the run's internal AbortController, which
      * triggers cancellation of the OR stream and any in-flight tool execution.

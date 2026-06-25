@@ -34,9 +34,15 @@ export default defineConfig({
         // enabled. The outer catch in the afterError body-read path and the
         // no-throw defense-in-depth branch are intentionally low-value to
         // cover; thresholds updated to reflect the new baseline.
+        //
+        // Phase 7.1 (real-token compaction trigger): functions ratcheted
+        // 98.1 → 98.6 (suite sits at 98.64). Two defensive lines stay
+        // uncovered in agent.ts: the contractually-unreachable catch around
+        // ModelContextLengthCache.get() and the never-break-the-live-run
+        // catch in the mid-run threshold check.
         statements: 98.9,
         branches: 96.2,
-        functions: 98.1,
+        functions: 98.6,
         lines: 99.45,
       },
     },
