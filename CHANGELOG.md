@@ -111,6 +111,38 @@ safetyBuffer` (absolute-buffer shape, à la Claude Code / opencode),
     honor it; manual `compact()` bypasses the breaker, never increments the
     counter, and any successful compaction resets it.
   - `COMPACTION_PROMPT` updated to describe the transcript-shaped input.
+- **Context compaction v2 — Card 7.4: tool-output prune tier (no-LLM
+  microcompaction).** The cheapest intervention now runs before full
+  compaction is even considered:
+  - When the auto-compaction threshold — or the new optional lower
+    `pruneThreshold` — is crossed at run end, older `function_call_output`
+    contents are replaced **in place** with markers, keeping the
+    message/tool-call skeleton intact: `[Old tool result content cleared]`
+    for re-derivable tools (`PRUNE_REDERIVABLE_TOOLS`: read_file,
+    grep_files, glob, list_directory, run_command) and for non-persistent
+    sessions; `[Tool result stored at: <path>]` otherwise, with the
+    original bytes offloaded under `<logsRoot>/<sessionId>/pruned/`
+    (recoverable — the agent can re-read them).
+  - Protections (opencode/Claude Code shapes): the most recent
+    `PRUNE_PROTECT_RECENT_TURNS` (2) turns, the most recent
+    `PRUNE_PROTECT_RECENT_TOKENS` (40k) of tool output newest-first, the
+    `pruneProtectedTools` skip-list (default
+    `DEFAULT_PRUNE_PROTECTED_TOOLS` = `['skill']`; add `'spawn_subagent'`
+    to keep subagent results), already-pruned markers, and outputs whose
+    tool name cannot be resolved from the paired `function_call`
+    (fail-safe).
+  - The prune commits only when it reclaims ≥ `PRUNE_MIN_RECLAIM_TOKENS`
+    (20k) — pruning rewrites the prefix and costs one prompt-cache miss,
+    so a small prune is pure cache invalidation. On commit it clears
+    `previousResponseId` (same reasoning as compaction), emits a
+    `Notification` hook (`message: 'tool_outputs_pruned'`) and a new
+    `kind: 'prune'` transcript record (`logTranscriptPrune`). If the pruned
+    history falls back under the compaction threshold, the summarizer call
+    is skipped entirely.
+  - New options: `autoPrune` (default `true`, gated on `autoCompact`),
+    `pruneThreshold` (lower prune-only trigger, same currency as
+    `compactionThreshold`), `pruneProtectedTools`. New pure exports:
+    `planToolOutputPrune`, `pruneStoredMarker`, marker/limit constants.
 
 - **`reasoning_delta` core event — live reasoning/thinking streaming.**
   Reasoning models that stream plaintext reasoning over the OR Responses

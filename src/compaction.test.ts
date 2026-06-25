@@ -4,6 +4,14 @@ import {
   COMPACTION_FAILURE_LIMIT,
   COMPACTION_MIN_SHRINK_RATIO,
   COMPACTION_PROMPT,
+  DEFAULT_PRUNE_PROTECTED_TOOLS,
+  PRUNE_CLEARED_MARKER,
+  PRUNE_MIN_RECLAIM_TOKENS,
+  PRUNE_PROTECT_RECENT_TOKENS,
+  PRUNE_PROTECT_RECENT_TURNS,
+  PRUNE_REDERIVABLE_TOOLS,
+  planToolOutputPrune,
+  pruneStoredMarker,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
   DEFAULT_KEEP_BUDGET_MAX_TOKENS,
   DEFAULT_KEEP_BUDGET_MIN_TOKENS,
@@ -763,5 +771,224 @@ describe('renderMessagesForSummary — content edge shapes', () => {
     );
     expect(renderMessagesForSummary([{ role: 'user', content: null }])).toBe('user: ');
     expect(renderMessagesForSummary([{ role: 'user' }])).toBe('user: ');
+  });
+});
+
+// ——— Phase 7.4: tool-output prune tier ———
+
+const pu = (content = 'user-msg') => ({ type: 'message', role: 'user', content });
+const pa = (content = 'assistant-msg') => ({ type: 'message', role: 'assistant', content });
+const pfc = (callId: string, name: string) => ({
+  type: 'function_call',
+  call_id: callId,
+  name,
+  arguments: '{}',
+});
+const pfco = (callId: string, output: unknown) => ({
+  type: 'function_call_output',
+  call_id: callId,
+  output,
+});
+
+describe('planToolOutputPrune', () => {
+  it('selects old tool outputs below both protections, resolving names via call_id', () => {
+    const big = 'x'.repeat(4_000); // 1000 tokens
+    const msgs = [
+      pu('t1'),
+      pfc('c1', 'read_file'),
+      pfco('c1', big),
+      pa('done-1'),
+      pu('t2'),
+      pa('done-2'),
+      pu('t3'),
+      pa('done-3'),
+    ];
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 2,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates).toEqual([
+      { index: 2, callId: 'c1', toolName: 'read_file', output: big, outputTokens: 1_000 },
+    ]);
+    expect(plan.reclaimedTokens).toBe(1_000);
+  });
+
+  it('protects everything inside the most recent K turns', () => {
+    const big = 'x'.repeat(4_000);
+    const msgs = [pu('t1'), pa('a1'), pu('t2'), pfc('c1', 'read_file'), pfco('c1', big), pa('a2')];
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 2,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates).toEqual([]);
+  });
+
+  it('protects the most recent N tokens of tool output, newest first, across the whole history', () => {
+    const oldOut = 'o'.repeat(800); // 200 tokens
+    const newOut = 'n'.repeat(200); // 50 tokens
+    const msgs = [
+      pu('t1'),
+      pfc('c1', 'read_file'),
+      pfco('c1', oldOut),
+      pa('a1'),
+      pfc('c2', 'read_file'),
+      pfco('c2', newOut),
+      pa('a2'),
+      pu('t2'),
+      pa('a3'),
+    ];
+    // Budget 50: the newest output consumes it exactly; the older one is fair game.
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 50,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates.map((c) => c.callId)).toEqual(['c1']);
+    // Budget 251: both outputs fall inside the protected recency budget.
+    const planAll = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 251,
+      minReclaimTokens: 1,
+    });
+    expect(planAll.candidates).toEqual([]);
+  });
+
+  it('skips protected tools (skill by default; custom list honored)', () => {
+    const big = 'x'.repeat(4_000);
+    const msgs = [
+      pu('t1'),
+      pfc('c1', 'skill'),
+      pfco('c1', big),
+      pfc('c2', 'web_probe'),
+      pfco('c2', big),
+      pu('t2'),
+      pa('a'),
+    ];
+    const defaults = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(defaults.candidates.map((c) => c.toolName)).toEqual(['web_probe']);
+
+    const custom = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+      protectedTools: ['web_probe'],
+    });
+    expect(custom.candidates.map((c) => c.toolName)).toEqual(['skill']);
+  });
+
+  it('treats outputs with unresolvable tool names as protected (fail-safe)', () => {
+    const msgs = [
+      pu('t1'),
+      pfco('orphan-call', 'x'.repeat(4_000)),
+      { type: 'function_call_output', output: 'y'.repeat(4_000) }, // no call_id at all
+      pu('t2'),
+      pa('a'),
+    ];
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates).toEqual([]);
+  });
+
+  it('skips already-pruned markers and non-string outputs', () => {
+    const msgs = [
+      pu('t1'),
+      pfc('c1', 'read_file'),
+      pfco('c1', PRUNE_CLEARED_MARKER),
+      pfc('c2', 'read_file'),
+      pfco('c2', pruneStoredMarker('/tmp/x.txt')),
+      pfc('c3', 'read_file'),
+      pfco('c3', { structured: 'output' }),
+      pu('t2'),
+      pa('a'),
+    ];
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates).toEqual([]);
+  });
+
+  it('returns an empty plan when the reclaim falls below the minimum', () => {
+    const msgs = [
+      pu('t1'),
+      pfc('c1', 'read_file'),
+      pfco('c1', 'x'.repeat(400)), // 100 tokens
+      pu('t2'),
+      pa('a'),
+    ];
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 0,
+      minReclaimTokens: 101,
+    });
+    expect(plan.candidates).toEqual([]);
+    expect(plan.reclaimedTokens).toBe(0);
+  });
+
+  it('orders candidates oldest first and handles histories with no user messages', () => {
+    const big = 'x'.repeat(4_000);
+    const msgs = [
+      pfc('c1', 'read_file'),
+      pfco('c1', big),
+      pfc('c2', 'run_command'),
+      pfco('c2', big),
+      pa('tail'),
+    ];
+    // No user messages → only the very last item is turn-protected.
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates.map((c) => c.callId)).toEqual(['c1', 'c2']);
+    expect(plan.reclaimedTokens).toBe(2_000);
+  });
+
+  it('returns an empty plan for empty or non-array input', () => {
+    expect(planToolOutputPrune([]).candidates).toEqual([]);
+    expect(planToolOutputPrune('not-an-array').candidates).toEqual([]);
+    expect(planToolOutputPrune(null).candidates).toEqual([]);
+  });
+
+  it('exposes the documented defaults', () => {
+    expect(PRUNE_PROTECT_RECENT_TURNS).toBe(2);
+    expect(PRUNE_PROTECT_RECENT_TOKENS).toBe(40_000);
+    expect(PRUNE_MIN_RECLAIM_TOKENS).toBe(20_000);
+    expect(DEFAULT_PRUNE_PROTECTED_TOOLS).toEqual(['skill']);
+    expect(PRUNE_REDERIVABLE_TOOLS).toContain('read_file');
+    expect(PRUNE_REDERIVABLE_TOOLS).toContain('run_command');
+    expect(pruneStoredMarker('/a/b.txt')).toBe('[Tool result stored at: /a/b.txt]');
+  });
+});
+
+describe('planToolOutputPrune — non-object items', () => {
+  it('ignores primitive and null items everywhere in the walk', () => {
+    const big = 'x'.repeat(4_000);
+    const msgs = [
+      'loose string',
+      null,
+      7,
+      pu('t1'),
+      pfc('c1', 'read_file'),
+      pfco('c1', big),
+      'another string',
+      pu('t2'),
+      pa('a'),
+    ];
+    const plan = planToolOutputPrune(msgs, {
+      protectRecentTurns: 1,
+      protectRecentTokens: 0,
+      minReclaimTokens: 1,
+    });
+    expect(plan.candidates.map((c) => c.callId)).toEqual(['c1']);
   });
 });

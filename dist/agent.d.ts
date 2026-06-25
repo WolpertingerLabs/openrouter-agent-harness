@@ -616,6 +616,37 @@ export interface OpenRouterAgentRunOptions {
      */
     autoCompact?: boolean;
     /**
+     * Phase 7.4: when `false`, disables the zero-LLM-call **tool-output prune
+     * tier** that runs before full compaction is considered. When the
+     * compaction threshold (or the lower {@link pruneThreshold}) is crossed at
+     * run end, older `function_call_output` contents are replaced in place
+     * with markers — `[Old tool result content cleared]` for re-derivable
+     * tools, `[Tool result stored at: <path>]` (recoverable, written under
+     * {@link logsRoot}) otherwise — protecting the most recent
+     * {@link PRUNE_PROTECT_RECENT_TURNS} turns and the most recent
+     * {@link PRUNE_PROTECT_RECENT_TOKENS} of tool output. The prune commits
+     * only when it reclaims ≥ {@link PRUNE_MIN_RECLAIM_TOKENS} (a small prune
+     * is pure prompt-cache invalidation). If the pruned history falls back
+     * under the compaction threshold, the summarizer call is skipped entirely.
+     * Defaults to `true`; gated on {@link autoCompact} (the prune is a tier of
+     * the same implicit trigger).
+     */
+    autoPrune?: boolean;
+    /**
+     * Phase 7.4: optional LOWER threshold (same currency as
+     * {@link compactionThreshold}: chars by default, tokens with a
+     * {@link tokenCounter}) at which the prune tier fires on its own — before
+     * the compaction threshold is reached. Unset → the prune fires only when
+     * the compaction threshold itself is crossed.
+     */
+    pruneThreshold?: number;
+    /**
+     * Phase 7.4: tool names whose outputs are never pruned. Defaults to
+     * {@link DEFAULT_PRUNE_PROTECTED_TOOLS} (`['skill']`). Add
+     * `'spawn_subagent'` to keep spawned-subagent results verbatim.
+     */
+    pruneProtectedTools?: readonly string[];
+    /**
      * Phase 5.2.4: explicit list of MCP servers to spawn for this run.
      * When set, {@link autoDiscoverMcp} is ignored and the bridge uses this
      * array verbatim. Each entry is the discriminated union from
@@ -937,6 +968,15 @@ export declare class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent>
      * takes effect.
      */
     private shouldCompactForRealTokens;
+    /**
+     * Phase 7.4: decide whether the history has crossed the OPTIONAL lower
+     * prune-only threshold ({@link OpenRouterAgentRunOptions.pruneThreshold}).
+     * Same dual accounting as {@link isOverCompactionThreshold}: tokens when a
+     * `tokenCounter` is wired (with the same warn-and-fall-back-to-chars
+     * convention on a throwing counter), chars otherwise. Unset → `false`
+     * (the prune tier then fires only with the compaction threshold).
+     */
+    private isOverPruneThreshold;
     /**
      * Abort the in-flight run. Fires the run's internal AbortController, which
      * triggers cancellation of the OR stream and any in-flight tool execution.

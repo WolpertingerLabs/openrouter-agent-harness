@@ -1,7 +1,8 @@
 import { OpenRouter, stepCountIs, maxCost, isTurnStartEvent, isTurnEndEvent, isToolCallOutputEvent, isClientTool, } from '@openrouter/agent';
 import { join } from 'node:path';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
-import { COMPACTION_FAILURE_LIMIT, COMPACTION_MIN_SHRINK_RATIO, COMPACTION_PROMPT, CHARS_PER_TOKEN, MAX_SUMMARIZER_TRIM_RETRIES, estimateInstructionsAndToolsTokens, getModelContextWindow, isContextOverflowError, partitionMessages, renderMessagesForSummary, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, resolveKeepBudgetTokens, resolveSummarizerInputBudgetChars, serializeMessagesForEstimate, } from './compaction.js';
+import { COMPACTION_FAILURE_LIMIT, COMPACTION_MIN_SHRINK_RATIO, COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_PRUNE_PROTECTED_TOOLS, MAX_SUMMARIZER_TRIM_RETRIES, PRUNE_CLEARED_MARKER, PRUNE_REDERIVABLE_TOOLS, estimateInstructionsAndToolsTokens, getModelContextWindow, isContextOverflowError, partitionMessages, planToolOutputPrune, pruneStoredMarker, renderMessagesForSummary, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, resolveKeepBudgetTokens, resolveSummarizerInputBudgetChars, serializeMessagesForEstimate, } from './compaction.js';
 import { ModelContextLengthCache } from './openrouter-api.js';
 import { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 import { allTools } from './tools/index.js';
@@ -12,7 +13,7 @@ import { isServerToolOutputItem, normalizeServerToolItem } from './tools/server-
 import { createFileStateAccessor } from './state/file-state.js';
 import { createMemoryStateAccessor } from './state/memory-state.js';
 import { createRequestId, createGenerationId, logRequest, logGeneration, logSessionStart, } from './logging/logger.js';
-import { logTranscriptSessionStart, logTranscriptUser, logTranscriptAssistant, logTranscriptToolResult, logTranscriptServerTool, logTranscriptCompact, logTranscriptSessionEnd, } from './logging/transcript.js';
+import { logTranscriptSessionStart, logTranscriptUser, logTranscriptAssistant, logTranscriptToolResult, logTranscriptServerTool, logTranscriptCompact, logTranscriptPrune, logTranscriptSessionEnd, } from './logging/transcript.js';
 import { permissionModeToCanUseTool } from './permission-modes.js';
 import { buildToolFilterCanUseTool, compileRule } from './tool-filters.js';
 import { composeInstructions } from './context-discovery.js';
@@ -174,6 +175,9 @@ function resolveOptions(opts) {
         }),
         ...(opts.keepRecentTurns !== undefined && { keepRecentTurns: opts.keepRecentTurns }),
         autoCompact: opts.autoCompact ?? true,
+        autoPrune: opts.autoPrune ?? true,
+        ...(opts.pruneThreshold !== undefined && { pruneThreshold: opts.pruneThreshold }),
+        pruneProtectedTools: opts.pruneProtectedTools ?? DEFAULT_PRUNE_PROTECTED_TOOLS,
         ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
         autoDiscoverMcp: opts.autoDiscoverMcp ?? false,
         enableToolSearch: opts.enableToolSearch ?? false,
@@ -762,6 +766,168 @@ export class OpenRouterAgentRun {
                     tools: this.opts.tools,
                 });
         return observed >= thresholdTokens;
+    }
+    /**
+     * Phase 7.4: decide whether the history has crossed the OPTIONAL lower
+     * prune-only threshold ({@link OpenRouterAgentRunOptions.pruneThreshold}).
+     * Same dual accounting as {@link isOverCompactionThreshold}: tokens when a
+     * `tokenCounter` is wired (with the same warn-and-fall-back-to-chars
+     * convention on a throwing counter), chars otherwise. Unset → `false`
+     * (the prune tier then fires only with the compaction threshold).
+     */
+    isOverPruneThreshold(messages) {
+        const { pruneThreshold, tokenCounter, logger } = this.opts;
+        if (pruneThreshold === undefined)
+            return false;
+        const serialized = serializeMessagesForEstimate(messages);
+        if (tokenCounter !== undefined) {
+            try {
+                return tokenCounter(serialized) >= pruneThreshold;
+            }
+            catch (err) {
+                logger?.('warn', 'tokenCounter threw — falling back to the chars/4 heuristic', {
+                    error: err,
+                });
+            }
+        }
+        return serialized.length >= pruneThreshold;
+    }
+    /**
+     * Phase 7.4: the zero-LLM-call tool-output prune (microcompaction).
+     * Plans via {@link planToolOutputPrune} (protect the most recent
+     * {@link PRUNE_PROTECT_RECENT_TURNS} turns + the most recent
+     * {@link PRUNE_PROTECT_RECENT_TOKENS} of tool output; skip
+     * {@link OpenRouterAgentRunOptions.pruneProtectedTools}), then replaces
+     * older `function_call_output` contents in place:
+     *
+     * - **cleared** (`[Old tool result content cleared]`) for re-derivable
+     *   tools ({@link PRUNE_REDERIVABLE_TOOLS}) and for non-persistent
+     *   sessions (no disk to offload to),
+     * - **offloaded** (`[Tool result stored at: <path>]`) otherwise — the
+     *   original bytes land under `<logsRoot>/<sessionId>/pruned/` so the
+     *   agent can re-read them (recoverable compression).
+     *
+     * The message / tool-call skeleton stays intact — only `output` strings
+     * are replaced. Commits only when the plan reclaims
+     * ≥ {@link PRUNE_MIN_RECLAIM_TOKENS} (else returns `false` untouched —
+     * a small prune is pure prompt-cache invalidation). On commit, clears
+     * `previousResponseId` (the prefix was rewritten — same reasoning as
+     * {@link compact}), emits a `Notification` hook
+     * (`message: 'tool_outputs_pruned'`) and a `prune` transcript record.
+     */
+    async #performToolOutputPrune() {
+        const state = await this.stateAccessor.load();
+        if (!state)
+            return false;
+        const rawMessages = state.messages;
+        if (!Array.isArray(rawMessages) || rawMessages.length === 0)
+            return false;
+        const plan = planToolOutputPrune(rawMessages, {
+            protectedTools: this.opts.pruneProtectedTools,
+        });
+        if (plan.candidates.length === 0)
+            return false;
+        const rederivable = new Set(PRUNE_REDERIVABLE_TOOLS);
+        const next = [...rawMessages];
+        let offloadedCount = 0;
+        for (const candidate of plan.candidates) {
+            let marker = PRUNE_CLEARED_MARKER;
+            const shouldOffload = this.persistSession &&
+                candidate.toolName !== undefined &&
+                !rederivable.has(candidate.toolName);
+            if (shouldOffload) {
+                try {
+                    const dir = join(this.opts.logsRoot, this.opts.sessionId, 'pruned');
+                    await mkdir(dir, { recursive: true });
+                    const baseName = candidate.callId ?? `item-${candidate.index}`;
+                    const filePath = join(dir, `${sanitizePruneFileName(baseName)}.txt`);
+                    await writeFile(filePath, candidate.output, 'utf-8');
+                    marker = pruneStoredMarker(filePath);
+                    offloadedCount += 1;
+                }
+                catch (err) {
+                    // Disk trouble must not break the prune — fall back to clearing.
+                    this.opts.logger?.('warn', 'Failed to offload pruned tool output — clearing instead', {
+                        error: err,
+                    });
+                }
+            }
+            next[candidate.index] = {
+                ...next[candidate.index],
+                output: marker,
+            };
+        }
+        const nextState = {
+            ...state,
+            messages: next,
+            updatedAt: Date.now(),
+        };
+        // The prefix was rewritten — the server must not splice a stale response
+        // chain onto it (same reasoning as compact()).
+        delete nextState.previousResponseId;
+        await this.stateAccessor.save(nextState);
+        await this.safeFireHook('Notification', {
+            event: 'Notification',
+            level: 'info',
+            message: 'tool_outputs_pruned',
+            context: {
+                sessionId: this.opts.sessionId,
+                prunedCount: plan.candidates.length,
+                reclaimedTokensEstimate: plan.reclaimedTokens,
+                offloadedCount,
+            },
+        });
+        this.opts.logger?.('info', 'Pruned old tool outputs', {
+            prunedCount: plan.candidates.length,
+            reclaimedTokensEstimate: plan.reclaimedTokens,
+            offloadedCount,
+        });
+        if (this.persistSession) {
+            await logTranscriptPrune({
+                logsRoot: this.opts.logsRoot,
+                sessionId: this.opts.sessionId,
+                prunedCount: plan.candidates.length,
+                reclaimedTokensEstimate: plan.reclaimedTokens,
+                offloadedCount,
+            });
+        }
+        return true;
+    }
+    /**
+     * Phase 7.1 + 7.4: the shared auto-compaction step. The zero-LLM tool-output
+     * prune tier (7.4) runs FIRST; only if the history is still over the
+     * compaction threshold afterward does the LLM summarizer (7.3-hardened
+     * {@link compact}) fire. Invoked from BOTH the mid-run loop top (when the
+     * previous cycle marked {@link OpenRouterAgentRunOptions} real-token
+     * threshold) and the run-end `finally`, so the prune tier joins the mid-run
+     * trigger rather than running at run end only (Card 7.4's "when the threshold
+     * check approaches" reading).
+     *
+     * `compactionSignalled` is the 7.1 real-token compaction trigger for this
+     * call site; the prune tier additionally fires on the optional lower
+     * {@link OpenRouterAgentRunOptions.pruneThreshold}. Errors propagate to the
+     * caller's swallow/log site (mid-run and run-end both swallow).
+     */
+    async #autoCompactWithPrune(compactionSignalled) {
+        const persistedState = await this.stateAccessor.load();
+        let messages = persistedState?.messages;
+        let overCompaction = compactionSignalled;
+        if (this.opts.autoPrune && (overCompaction || this.isOverPruneThreshold(messages))) {
+            const pruned = await this.#performToolOutputPrune();
+            if (pruned && overCompaction) {
+                // The prune rewrote the prefix — re-estimate (chars, the only currency
+                // available without a fresh model call) before paying for a summary.
+                const repruned = await this.stateAccessor.load();
+                messages = repruned?.messages;
+                overCompaction = this.isOverCompactionThreshold(messages);
+            }
+        }
+        if (overCompaction) {
+            // Internal entry point (not the public `compact()`): the mid-run caller
+            // runs INSIDE iterate() with `#isIterating` set, and the run-end caller
+            // has already cleared it — both must bypass the public iter-race guard.
+            await this.#performCompaction('auto');
+        }
     }
     /**
      * Abort the in-flight run. Fires the run's internal AbortController, which
@@ -1500,12 +1666,13 @@ export class OpenRouterAgentRun {
                     pendingMidRunCompaction = false;
                     if (this.opts.autoCompact && persistSession) {
                         try {
-                            // Compaction rewrites `messages` and clears
+                            // Phase 7.4: prune tier first, then the summarizer only if still
+                            // needed. Compaction rewrites `messages` and clears
                             // `previousResponseId` through the SHARED state accessor; the
                             // next cycle's `callModel({ state })` resumes from the
                             // condensed history with no further reload needed (the
                             // accessor is the source of truth).
-                            await this.#performCompaction('auto');
+                            await this.#autoCompactWithPrune(true);
                         }
                         catch (err) {
                             logger?.('error', 'Mid-run auto-compaction failed', { error: err });
@@ -2276,25 +2443,24 @@ export class OpenRouterAgentRun {
             // condensing. Errors from the summarizer call are caught so the
             // SessionEnd / Stop hook bracket below still fires.
             //
-            // Phase 7.1: the run-end check reuses the SAME mid-run signal. The
-            // final cycle's real-token threshold comparison (step 6 in the loop)
-            // sets `pendingMidRunCompaction`; when the loop exited before a NEXT
-            // cycle consumed it (input exhausted / stop condition), we compact
-            // here. Collapsing mid-run + run-end into one signal means a run never
-            // double-compacts the same history (loop-top + run-end).
+            // Phase 7.1 + 7.4: the run-end intervention reuses the SAME mid-run
+            // real-token signal. The final cycle's threshold comparison (step 6 in
+            // the loop) sets `pendingMidRunCompaction`; when the loop exited before a
+            // NEXT cycle consumed it (input exhausted / stop condition), the prune +
+            // compaction happen here. The zero-LLM prune tier (7.4) runs first via
+            // {@link #autoCompactWithPrune} and can skip the summarizer entirely; it
+            // also fires on the optional lower `pruneThreshold` even when the
+            // compaction signal is unset.
             //
             // Gating: skip when the session is not expected to resume — a
             // `persistSession: false` run has no on-disk state to condense for a
             // future run, so paying for a summarizer call at run end is pure waste
             // (the common cron-one-shot footgun). `status !== 'error'` keeps the
             // run-end summarizer off the failure path.
-            if (this.opts.autoCompact &&
-                status !== 'error' &&
-                persistSession &&
-                pendingMidRunCompaction) {
+            if (this.opts.autoCompact && status !== 'error' && persistSession) {
                 // No flag reset — `finally` is the last code to touch it.
                 try {
-                    await this.compact('auto');
+                    await this.#autoCompactWithPrune(pendingMidRunCompaction);
                 }
                 catch (err) {
                     logger?.('error', 'Auto-compaction failed', { error: err });
@@ -2330,6 +2496,14 @@ export class OpenRouterAgentRun {
 function readCompactionFailureCount(state) {
     const raw = state?.compactionFailureCount;
     return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
+}
+/**
+ * Phase 7.4: sanitize a tool `call_id` for use as an offload file name —
+ * anything outside `[A-Za-z0-9._-]` collapses to `_`. SDK call ids are
+ * already URL-safe; this is a defensive guard against hand-crafted state.
+ */
+function sanitizePruneFileName(name) {
+    return name.replace(/[^A-Za-z0-9._-]/g, '_');
 }
 /**
  * Wrap a Tool's execute with a canUseTool permission check. The original

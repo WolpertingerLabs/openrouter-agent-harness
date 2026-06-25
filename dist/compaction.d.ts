@@ -299,4 +299,97 @@ export declare function resolveSummarizerInputBudgetChars(model: string, overrid
  *   `encrypted_content` field removed, truncated).
  */
 export declare function renderMessagesForSummary(messages: unknown): string;
+/**
+ * Phase 7.4: marker that replaces a pruned tool output whose content is
+ * re-derivable (the agent can re-run the tool). Claude Code's exact wording.
+ */
+export declare const PRUNE_CLEARED_MARKER = "[Old tool result content cleared]";
+/**
+ * Phase 7.4: prefix of the marker that replaces a pruned tool output whose
+ * original bytes were offloaded to disk (recoverable — the agent can re-read
+ * the file). See {@link pruneStoredMarker}.
+ */
+export declare const PRUNE_STORED_MARKER_PREFIX = "[Tool result stored at: ";
+/** Phase 7.4: build the offloaded-output marker for a stored file path. */
+export declare function pruneStoredMarker(path: string): string;
+/**
+ * Phase 7.4: number of most-recent turns whose tool outputs are never pruned
+ * (opencode protects the last 2 turns). A turn starts at a `user`-role
+ * message.
+ */
+export declare const PRUNE_PROTECT_RECENT_TURNS = 2;
+/**
+ * Phase 7.4: most-recent tool-output budget (in tokens, chars/4 estimate)
+ * protected from pruning, accumulated newest-first (opencode: most recent
+ * 40k tokens of tool output survive).
+ */
+export declare const PRUNE_PROTECT_RECENT_TOKENS = 40000;
+/**
+ * Phase 7.4: minimum estimated reclaim (in tokens) for a prune to commit.
+ * Pruning rewrites the prefix and therefore costs one prompt-cache miss —
+ * a prune that reclaims less than this is pure cache invalidation
+ * (opencode: >20k tokens or skip).
+ */
+export declare const PRUNE_MIN_RECLAIM_TOKENS = 20000;
+/**
+ * Phase 7.4: tools whose outputs are never pruned by default. opencode
+ * protects `skill` (skill bodies ARE the operating instructions). Hosts can
+ * extend the list per run — e.g. add `spawn_subagent` to keep subagent
+ * results — via the agent's `pruneProtectedTools` option.
+ */
+export declare const DEFAULT_PRUNE_PROTECTED_TOOLS: readonly string[];
+/**
+ * Phase 7.4: tools whose pruned outputs are CLEARED rather than offloaded to
+ * disk even when the session persists — their content is cheaply
+ * re-derivable by re-running the tool (Claude Code clears these first).
+ */
+export declare const PRUNE_REDERIVABLE_TOOLS: readonly string[];
+/** One prunable `function_call_output` item identified by the planner. */
+export interface PruneCandidate {
+    /** Index into the messages array. */
+    index: number;
+    /** The output's `call_id` (used to name the offload file). */
+    callId?: string;
+    /** Tool name resolved from the matching `function_call` item. */
+    toolName?: string;
+    /** The original output string. */
+    output: string;
+    /** chars/4 token estimate of the output being removed. */
+    outputTokens: number;
+}
+/** Result of {@link planToolOutputPrune}. */
+export interface PrunePlan {
+    /** Items to prune, oldest first. Empty → skip (below min reclaim). */
+    candidates: PruneCandidate[];
+    /** Total estimated tokens reclaimed by the plan. */
+    reclaimedTokens: number;
+}
+/**
+ * Phase 7.4: plan a zero-LLM-call tool-output prune. Walks the history
+ * newest→oldest and selects older `function_call_output` items whose string
+ * content can be replaced in place with a marker, protecting:
+ *
+ * - everything inside the most recent `protectRecentTurns` turns (turn =
+ *   starts at a `user`-role message; when no user messages exist the last
+ *   item alone is protected),
+ * - the most recent `protectRecentTokens` worth of tool output (newest
+ *   first) outside that window,
+ * - outputs of `protectedTools` (resolved from the paired `function_call`'s
+ *   `name` via `call_id`; unresolvable names are treated as protected —
+ *   fail-safe),
+ * - already-pruned outputs (cleared / stored-at markers), and
+ * - non-string outputs (no in-place text replacement is meaningful).
+ *
+ * The plan commits only when the estimated reclaim exceeds
+ * `minReclaimTokens` — otherwise an empty plan is returned and the caller
+ * skips (a small prune is pure prompt-cache invalidation). The message /
+ * tool-call **skeleton stays intact**: only `output` strings are replaced,
+ * so the model still sees that the calls happened.
+ */
+export declare function planToolOutputPrune(messages: unknown, opts?: {
+    protectRecentTurns?: number;
+    protectRecentTokens?: number;
+    protectedTools?: readonly string[];
+    minReclaimTokens?: number;
+}): PrunePlan;
 //# sourceMappingURL=compaction.d.ts.map
