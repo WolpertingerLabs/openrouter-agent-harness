@@ -80,6 +80,37 @@ safetyBuffer` (absolute-buffer shape, à la Claude Code / opencode),
     user/assistant/tool-call/tool-output/reasoning items assert the kept tail
     never starts with a `function_call_output` or an unanchored reasoning
     item whenever a compaction would rewrite state.
+- **Context compaction v2 — Card 7.3: summarizer resilience (trim-retry,
+  inflation check, circuit breaker).** `compact()` can no longer wedge a
+  session:
+  - **Readable transcript input.** The summarize prefix is rendered as a
+    role-labelled transcript (new export `renderMessagesForSummary`) instead
+    of `JSON.stringify` of raw SDK items: tool outputs truncated to
+    `SUMMARY_TOOL_OUTPUT_MAX_CHARS` (2k), image/document payloads replaced
+    with `[image]`/`[document]` markers, and **encrypted reasoning content
+    (`encrypted_content`) stripped entirely** — readable reasoning summaries
+    are kept.
+  - **Input budget + drop-oldest retry.** The rendered input is capped to
+    the summarizer's own window budget (`resolveSummarizerInputBudgetChars`:
+    `window − SUMMARIZER_INPUT_RESERVE_TOKENS` (20k), floored at 25% of the
+    window) before the first attempt; a context-overflow failure
+    (`isContextOverflowError` — the API error text is the oracle) drops the
+    oldest quarter of remaining items and retries, up to
+    `MAX_SUMMARIZER_TRIM_RETRIES` (3). Non-overflow errors propagate
+    immediately. Dropped items are still removed from the history — they
+    just don't inform the summary (Codex drop-oldest precedent).
+  - **Inflation check (Gemini).** A rewrite that is not meaningfully smaller
+    than the original (post > `COMPACTION_MIN_SHRINK_RATIO` (0.9) × pre,
+    chars) preserves the original state and records a failed attempt.
+  - **Circuit breaker (Claude Code thrashing breaker).** After
+    `COMPACTION_FAILURE_LIMIT` (3) consecutive **auto**-compaction failures
+    on a session, the auto-trigger stops firing — each skip logs an
+    `'error'` and emits a `Notification` hook
+    (`message: 'auto_compaction_breaker_open'`). The counter persists in the
+    session state (`compactionFailureCount` field), so cron re-invocations
+    honor it; manual `compact()` bypasses the breaker, never increments the
+    counter, and any successful compaction resets it.
+  - `COMPACTION_PROMPT` updated to describe the transcript-shaped input.
 
 - **`reasoning_delta` core event — live reasoning/thinking streaming.**
   Reasoning models that stream plaintext reasoning over the OR Responses

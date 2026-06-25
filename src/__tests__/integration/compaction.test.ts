@@ -614,14 +614,16 @@ describe('integration: context compaction', () => {
 
   it('compact() throws synchronously when called from outside while iterate() is in progress', async () => {
     // Seed a non-empty state so compact() would otherwise have work to do —
-    // proves the guard fires BEFORE the (would-be) summarizer call.
+    // proves the guard fires BEFORE the (would-be) summarizer call. Content
+    // is sized so the post-iter compaction passes the 7.3 inflation check
+    // (the summary message must be meaningfully smaller than the original).
     await seedState({
       logsRoot,
       sessionId: SESSION,
       messages: [
-        { role: 'user', content: 'one' },
-        { role: 'assistant', content: 'two' },
-        { role: 'user', content: 'three' },
+        { role: 'user', content: 'one '.repeat(100) },
+        { role: 'assistant', content: 'two '.repeat(100) },
+        { role: 'user', content: 'three '.repeat(100) },
       ],
     });
 
