@@ -596,11 +596,15 @@ export interface OpenRouterAgentRunOptions {
      */
     safetyBufferTokens?: number;
     /**
-     * Phase 5.1: number of trailing messages (NOT strict turns — see
-     * {@link partitionMessages} JSDoc for the granularity note) preserved
-     * verbatim during compaction. Everything older is condensed into a single
-     * `developer`-role summary message. Defaults to
-     * {@link DEFAULT_KEEP_RECENT_TURNS} = 5.
+     * Phase 5.1 / 7.2: number of trailing **turns** (a turn starts at a
+     * `user`-role message — true turn granularity since Phase 7.2; v1 counted
+     * messages) preserved verbatim during compaction. Everything older is
+     * condensed into a single `developer`-role summary message. When omitted,
+     * the keep tail is **token-budgeted** instead: whole turns newest-first
+     * within `resolveKeepBudgetTokens(window)` = 25% of the model's context
+     * window clamped 2k–8k tokens (see {@link partitionMessages}). Either way
+     * the tail starts at a turn boundary, never at an orphaned
+     * `function_call_output` or unanchored reasoning item.
      */
     keepRecentTurns?: number;
     /**

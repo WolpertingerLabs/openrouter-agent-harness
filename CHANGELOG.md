@@ -48,6 +48,38 @@ safetyBuffer` (absolute-buffer shape, à la Claude Code / opencode),
   - Back-compat: an explicit `compactionThreshold` still wins outright
     (chars, or tokens with a `tokenCounter`) and bypasses the real-token path
     (and the `/models` lookup) entirely.
+- **Context compaction v2 — Card 7.2: turn-boundary-safe partition +
+  token-budgeted keep tail.** `partitionMessages` no longer slices at raw
+  message granularity (which could rebuild a history opening with an orphaned
+  `function_call_output` or a stranded reasoning item — both hard-400 on the
+  Responses API):
+  - **Turn-boundary-safe cut.** The keep tail always starts at a `user`-role
+    message (turn boundary; both the typed and bare `{ role, content }`
+    shapes are recognized). Gemini/opencode precedent. Only the keep tail
+    re-enters the conversation as live API items; the summarized prefix is
+    JSON-stringified for the summarizer, where item validity does not apply.
+  - **Token-budgeted keep tail (new default).** When `keepRecentTurns` is not
+    supplied, whole turns are kept newest-first while their chars/4 estimate
+    fits `resolveKeepBudgetTokens(window)` = 25% of the model's context
+    window clamped 2k–8k tokens (opencode's exact shape; new exports
+    `resolveKeepBudgetTokens`, `DEFAULT_KEEP_BUDGET_MIN_TOKENS`,
+    `DEFAULT_KEEP_BUDGET_MAX_TOKENS`, `KEEP_BUDGET_WINDOW_FRACTION`,
+    `PartitionMessagesOptions`).
+  - **Oversized-turn fallback (splitTurn analog).** A single tool-heavy turn
+    exceeding the budget alone keeps the most recent complete tool-call
+    group, advanced past orphaned outputs and unanchored trailing reasoning
+    items — never an orphaned fragment.
+  - **`keepRecentTurns` reinterpreted at TRUE turn granularity** (v1 counted
+    messages). Histories with no user messages fall back to the v1
+    trailing-N slice snapped to a valid tail start. `DEFAULT_KEEP_RECENT_TURNS`
+    remains exported but is no longer applied implicitly.
+  - The `PreCompact` hook payload now carries exactly one of
+    `keepRecentTurns` (caller override) or `keepBudgetTokens` (resolved
+    default budget), identifying which keep mode drove the partition.
+  - Property-style tests: 250 seeded arbitrary interleavings of
+    user/assistant/tool-call/tool-output/reasoning items assert the kept tail
+    never starts with a `function_call_output` or an unanchored reasoning
+    item whenever a compaction would rewrite state.
 
 - **`reasoning_delta` core event — live reasoning/thinking streaming.**
   Reasoning models that stream plaintext reasoning over the OR Responses

@@ -16,12 +16,12 @@ import { randomUUID } from 'node:crypto';
 import {
   COMPACTION_PROMPT,
   CHARS_PER_TOKEN,
-  DEFAULT_KEEP_RECENT_TURNS,
   estimateInstructionsAndToolsTokens,
   getModelContextWindow,
   partitionMessages,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
+  resolveKeepBudgetTokens,
   serializeMessagesForEstimate,
 } from './compaction.js';
 import { ModelContextLengthCache } from './openrouter-api.js';
@@ -736,11 +736,15 @@ export interface OpenRouterAgentRunOptions {
    */
   safetyBufferTokens?: number;
   /**
-   * Phase 5.1: number of trailing messages (NOT strict turns — see
-   * {@link partitionMessages} JSDoc for the granularity note) preserved
-   * verbatim during compaction. Everything older is condensed into a single
-   * `developer`-role summary message. Defaults to
-   * {@link DEFAULT_KEEP_RECENT_TURNS} = 5.
+   * Phase 5.1 / 7.2: number of trailing **turns** (a turn starts at a
+   * `user`-role message — true turn granularity since Phase 7.2; v1 counted
+   * messages) preserved verbatim during compaction. Everything older is
+   * condensed into a single `developer`-role summary message. When omitted,
+   * the keep tail is **token-budgeted** instead: whole turns newest-first
+   * within `resolveKeepBudgetTokens(window)` = 25% of the model's context
+   * window clamped 2k–8k tokens (see {@link partitionMessages}). Either way
+   * the tail starts at a turn boundary, never at an orphaned
+   * `function_call_output` or unanchored reasoning item.
    */
   keepRecentTurns?: number;
   /**
@@ -997,8 +1001,8 @@ interface ResolvedOptions {
   outputReserveTokens?: number;
   /** Phase 7.1: extra safety buffer (tokens) for the mid-run token threshold. */
   safetyBufferTokens?: number;
-  /** Phase 5.1: resolved trailing-message count to preserve verbatim. */
-  keepRecentTurns: number;
+  /** Phase 5.1 / 7.2: caller-supplied trailing-TURN count to preserve verbatim. `undefined` → token-budgeted keep tail. */
+  keepRecentTurns?: number;
   /** Phase 5.1: resolved auto-trigger toggle. */
   autoCompact: boolean;
   /** Phase 5.2.4: explicit MCP server list (overrides discovery when set). */
@@ -1119,7 +1123,7 @@ function resolveOptions(opts: OpenRouterAgentRunOptions): ResolvedOptions {
     ...(opts.safetyBufferTokens !== undefined && {
       safetyBufferTokens: opts.safetyBufferTokens,
     }),
-    keepRecentTurns: opts.keepRecentTurns ?? DEFAULT_KEEP_RECENT_TURNS,
+    ...(opts.keepRecentTurns !== undefined && { keepRecentTurns: opts.keepRecentTurns }),
     autoCompact: opts.autoCompact ?? true,
     ...(opts.mcpServers !== undefined && { mcpServers: opts.mcpServers }),
     autoDiscoverMcp: opts.autoDiscoverMcp ?? false,
@@ -1433,13 +1437,33 @@ export class OpenRouterAgentRun implements AsyncIterable<AgentCoreEvent> {
     if (!state) return;
     const rawMessages = (state as { messages?: unknown }).messages;
     if (!Array.isArray(rawMessages) || rawMessages.length === 0) return;
-    const { summarize, keep } = partitionMessages(rawMessages, this.opts.keepRecentTurns);
+    // Phase 7.2: explicit keepRecentTurns keeps the last N TURNS verbatim;
+    // when omitted, the keep tail is token-budgeted against the model's
+    // context window (25% clamped 2k–8k). Both modes snap the cut to a turn
+    // boundary / valid tail start — see partitionMessages.
+    const { summarize, keep } = partitionMessages(
+      rawMessages,
+      this.opts.keepRecentTurns !== undefined
+        ? { keepRecentTurns: this.opts.keepRecentTurns }
+        : {
+            contextWindowTokens: getModelContextWindow(
+              this.opts.model,
+              this.opts.modelContextWindows,
+            ),
+          },
+    );
     if (summarize.length === 0) return;
 
     await this.safeFireHook('PreCompact', {
       event: 'PreCompact',
       messages: summarize,
-      keepRecentTurns: this.opts.keepRecentTurns,
+      ...(this.opts.keepRecentTurns !== undefined
+        ? { keepRecentTurns: this.opts.keepRecentTurns }
+        : {
+            keepBudgetTokens: resolveKeepBudgetTokens(
+              getModelContextWindow(this.opts.model, this.opts.modelContextWindows),
+            ),
+          }),
       reason,
     });
 

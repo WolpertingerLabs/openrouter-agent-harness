@@ -181,8 +181,9 @@ describe('integration: context compaction', () => {
     expect(compactPayload.reason).toBe('auto');
     expect(compactPayload.keepRecentTurns).toBe(2);
     expect(Array.isArray(compactPayload.messages)).toBe(true);
-    // 8 seeded - 2 keep = 6 in summarize
-    expect((compactPayload.messages as unknown[]).length).toBe(6);
+    // Phase 7.2: keepRecentTurns is TURN-granular. The seeded history is
+    // [u,a]×4 → keep the last 2 turns (4 messages), summarize the first 4.
+    expect((compactPayload.messages as unknown[]).length).toBe(4);
 
     const stopIdx = hookEvents.findIndex((h) => h.event === 'Stop');
     const preCompactIdx = hookEvents.findIndex((h) => h.event === 'PreCompact');
@@ -204,18 +205,21 @@ describe('integration: context compaction', () => {
     expect(typeof compactCallArgs.input).toBe('string');
 
     // The persisted state.json was rewritten: leading summary message, then
-    // the last 2 messages preserved verbatim, previousResponseId cleared.
+    // the last 2 TURNS (4 messages) preserved verbatim, previousResponseId
+    // cleared. The tail starts at a turn boundary (user message).
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
     expect(persisted.previousResponseId).toBeUndefined();
-    expect(persisted.messages.length).toBe(3); // [summary, ...last 2]
+    expect(persisted.messages.length).toBe(5); // [summary, ...last 2 turns]
     expect(persisted.messages[0]).toMatchObject({
       type: 'message',
       role: 'developer',
     });
     expect(persisted.messages[0].content).toContain('SUMMARY-OF-PRIOR-TURNS');
-    // Last two messages of the seed survive verbatim.
-    expect(persisted.messages[1]).toEqual(longMessages[6]);
-    expect(persisted.messages[2]).toEqual(longMessages[7]);
+    // Last two turns of the seed survive verbatim, starting at a user message.
+    expect(persisted.messages[1]).toEqual(longMessages[4]);
+    expect(persisted.messages[2]).toEqual(longMessages[5]);
+    expect(persisted.messages[3]).toEqual(longMessages[6]);
+    expect(persisted.messages[4]).toEqual(longMessages[7]);
   });
 
   it('compaction callModel inherits the run-level `cacheControl` when set', async () => {
@@ -545,9 +549,11 @@ describe('integration: context compaction', () => {
     const payload = preCompact!.payload as Extract<HookPayload, { event: 'PreCompact' }>;
     expect(payload.reason).toBe('auto');
 
-    // And the state file was rewritten with the new summary.
+    // And the state file was rewritten with the new summary. Phase 7.2:
+    // keepRecentTurns: 2 keeps the last 2 TURNS (4 messages) of the [u,a]×4
+    // seed.
     const persisted = JSON.parse(await readFile(statePath, 'utf-8'));
-    expect(persisted.messages.length).toBe(3);
+    expect(persisted.messages.length).toBe(5);
     expect(persisted.messages[0].role).toBe('developer');
     expect(persisted.messages[0].content).toContain('BREAK-PATH-SUMMARY');
 

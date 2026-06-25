@@ -6,7 +6,7 @@ export { allTools, DEFAULT_TOOL_CONTEXT, askUserQuestionTool, taskCreateTool, ta
 export { tool, createSdkMcpServer } from './custom-tools.js';
 export { forkSession } from './session-fork.js';
 export { createCheckpoint, listCheckpoints, restoreCheckpoint, encodePath, decodePath, MAX_CHECKPOINTS_PER_SESSION, } from './checkpoints.js';
-export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_KEEP_RECENT_TURNS, DEFAULT_OUTPUT_RESERVE_TOKENS, DEFAULT_SAFETY_BUFFER_TOKENS, DEFAULT_THRESHOLD_RATIO, MODEL_CONTEXT_WINDOWS, estimateInstructionsAndToolsTokens, estimateMessagesCharLength, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, serializeMessagesForEstimate, } from './compaction.js';
+export { COMPACTION_PROMPT, CHARS_PER_TOKEN, DEFAULT_CONTEXT_WINDOW_TOKENS, DEFAULT_KEEP_BUDGET_MIN_TOKENS, DEFAULT_KEEP_BUDGET_MAX_TOKENS, DEFAULT_KEEP_RECENT_TURNS, DEFAULT_OUTPUT_RESERVE_TOKENS, DEFAULT_SAFETY_BUFFER_TOKENS, DEFAULT_THRESHOLD_RATIO, KEEP_BUDGET_WINDOW_FRACTION, MODEL_CONTEXT_WINDOWS, estimateInstructionsAndToolsTokens, estimateMessagesCharLength, getModelContextWindow, partitionMessages, resolveCompactionThresholdChars, resolveCompactionThresholdTokens, resolveKeepBudgetTokens, serializeMessagesForEstimate, } from './compaction.js';
 export { StreamStallError, createStallMonitor, monitorStream } from './stall.js';
 export { accountInfo, supportedModels, ModelContextLengthCache, MODEL_CONTEXT_LENGTH_CACHE_TTL_MS, } from './openrouter-api.js';
 export { loadMcpConfig } from './mcp/config.js';

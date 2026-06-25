@@ -3,10 +3,13 @@ import {
   CHARS_PER_TOKEN,
   COMPACTION_PROMPT,
   DEFAULT_CONTEXT_WINDOW_TOKENS,
+  DEFAULT_KEEP_BUDGET_MAX_TOKENS,
+  DEFAULT_KEEP_BUDGET_MIN_TOKENS,
   DEFAULT_KEEP_RECENT_TURNS,
   DEFAULT_OUTPUT_RESERVE_TOKENS,
   DEFAULT_SAFETY_BUFFER_TOKENS,
   DEFAULT_THRESHOLD_RATIO,
+  KEEP_BUDGET_WINDOW_FRACTION,
   MODEL_CONTEXT_WINDOWS,
   estimateInstructionsAndToolsTokens,
   estimateMessagesCharLength,
@@ -14,6 +17,7 @@ import {
   partitionMessages,
   resolveCompactionThresholdChars,
   resolveCompactionThresholdTokens,
+  resolveKeepBudgetTokens,
   serializeMessagesForEstimate,
 } from './compaction.js';
 
@@ -343,5 +347,243 @@ describe('partitionMessages', () => {
   it('uses the documented default when wired through', () => {
     // Spot-check that the default constant lines up with the issue spec.
     expect(DEFAULT_KEEP_RECENT_TURNS).toBe(5);
+  });
+});
+
+// ——— Phase 7.2: turn-boundary-safe partition + token-budgeted keep tail ———
+
+/** Item builders matching the SDK `InputsUnion` shapes the partition inspects. */
+const u = (content = 'user-msg') => ({ type: 'message', role: 'user', content });
+const uBare = (content = 'user-msg') => ({ role: 'user', content }); // legacy persisted shape
+const a = (content = 'assistant-msg') => ({ type: 'message', role: 'assistant', content });
+const fc = (content = '{}') => ({
+  type: 'function_call',
+  call_id: 'c1',
+  name: 'read_file',
+  arguments: content,
+});
+const fco = (content = 'output') => ({
+  type: 'function_call_output',
+  call_id: 'c1',
+  output: content,
+});
+const r = (content = 'thinking') => ({ type: 'reasoning', summary: content });
+
+/** Mirror of the partition's per-item estimate, for sizing test budgets. */
+const itemTokens = (item: unknown) => Math.ceil(JSON.stringify(item).length / CHARS_PER_TOKEN);
+const tokensOf = (items: unknown[]) => items.reduce<number>((acc, m) => acc + itemTokens(m), 0);
+
+describe('partitionMessages — turn-granular keepRecentTurns (7.2)', () => {
+  it('keeps the last N TURNS, cutting at a user message', () => {
+    const msgs = [u('1'), a('1'), u('2'), a('2'), u('3'), a('3')];
+    const { summarize, keep } = partitionMessages(msgs, 2);
+    expect(summarize).toEqual([u('1'), a('1')]);
+    expect(keep).toEqual([u('2'), a('2'), u('3'), a('3')]);
+  });
+
+  it('accepts the options-object form for the same turn override', () => {
+    const msgs = [u('1'), a('1'), u('2'), a('2')];
+    const { keep } = partitionMessages(msgs, { keepRecentTurns: 1 });
+    expect(keep).toEqual([u('2'), a('2')]);
+  });
+
+  it('keeps everything when fewer turns exist than requested', () => {
+    const msgs = [u('1'), a('1'), fc(), fco()];
+    const { summarize, keep } = partitionMessages(msgs, 3);
+    expect(summarize).toEqual([]);
+    expect(keep).toEqual(msgs);
+  });
+
+  it('summarizes the pre-first-user preamble (developer/system items)', () => {
+    const dev = { type: 'message', role: 'developer', content: '[old summary]' };
+    const msgs = [dev, u('1'), a('1')];
+    const { summarize, keep } = partitionMessages(msgs, 1);
+    expect(summarize).toEqual([dev]);
+    expect(keep).toEqual([u('1'), a('1')]);
+  });
+
+  it('keeps whole turns including tool calls/outputs/reasoning inside the turn', () => {
+    const msgs = [u('1'), a('1'), u('2'), r(), fc(), fco(), a('2')];
+    const { keep } = partitionMessages(msgs, 1);
+    expect(keep).toEqual([u('2'), r(), fc(), fco(), a('2')]);
+  });
+
+  it('recognizes the bare {role, content} user shape as a turn boundary', () => {
+    const msgs = [uBare('1'), a('1'), uBare('2'), a('2')];
+    const { keep } = partitionMessages(msgs, 1);
+    expect(keep).toEqual([uBare('2'), a('2')]);
+  });
+
+  it('does NOT treat a user-role item with a non-message type as a turn boundary', () => {
+    const odd = { type: 'function_call_output', role: 'user', call_id: 'c9', output: 'x' };
+    const msgs = [u('1'), a('1'), odd, a('2')];
+    // Only ONE real turn exists — `odd` is not a boundary, so keeping 1 turn
+    // keeps everything from the sole user message.
+    const { summarize, keep } = partitionMessages(msgs, 1);
+    expect(summarize).toEqual([]);
+    expect(keep).toEqual(msgs);
+  });
+
+  it('no-user-message history: falls back to trailing-N items snapped past an orphaned output', () => {
+    const msgs = [a('1'), fc(), fco(), a('2')];
+    // Trailing 2 would start at the fco — advance to the assistant message.
+    const { keep } = partitionMessages(msgs, 2);
+    expect(keep).toEqual([a('2')]);
+  });
+});
+
+describe('partitionMessages — token-budgeted keep tail (7.2 default mode)', () => {
+  it('keeps whole recent turns while the budget holds', () => {
+    const turn1 = [u('x'.repeat(400)), a('y'.repeat(400))];
+    const turn2 = [u('z'.repeat(400)), a('w'.repeat(400))];
+    const msgs = [...turn1, ...turn2];
+    // Budget fits turn2 exactly but not turn1 + turn2.
+    const budget = tokensOf(turn2);
+    const { summarize, keep } = partitionMessages(msgs, { keepBudgetTokens: budget });
+    expect(summarize).toEqual(turn1);
+    expect(keep).toEqual(turn2);
+  });
+
+  it('keeps multiple turns when they all fit', () => {
+    const msgs = [u('1'), a('1'), u('2'), a('2')];
+    const { summarize, keep } = partitionMessages(msgs, { keepBudgetTokens: 8_000 });
+    expect(summarize).toEqual([]);
+    expect(keep).toEqual(msgs);
+  });
+
+  it('oversized single turn: falls back to the most recent complete group, never an orphaned output', () => {
+    const big = u('x'.repeat(10_000));
+    const tail = [fc('{"path":"a"}'), fco('small-output'), a('done')];
+    const msgs = [big, ...tail];
+    // Budget fits the tool-call group but not the giant user message.
+    const budget = tokensOf(tail);
+    const { summarize, keep } = partitionMessages(msgs, { keepBudgetTokens: budget });
+    expect(summarize).toEqual([big]);
+    expect(keep).toEqual(tail);
+    expect((keep[0] as { type?: string }).type).not.toBe('function_call_output');
+  });
+
+  it('oversized turn landing on a function_call_output advances past it', () => {
+    const msgs = [u('x'.repeat(10_000)), fc('y'.repeat(10_000)), fco('out'), a('done')];
+    // Budget fits [fco, a] but not the giant fc — the tentative cut lands on
+    // the orphaned output and must advance to the assistant message.
+    const budget = tokensOf([fco('out'), a('done')]);
+    const { keep } = partitionMessages(msgs, { keepBudgetTokens: budget });
+    expect(keep).toEqual([a('done')]);
+  });
+
+  it('never keeps an unanchored trailing reasoning item', () => {
+    const msgs = [u('x'.repeat(10_000)), a('y'.repeat(10_000)), r('brief')];
+    // Budget fits only the trailing reasoning item — which anchors to
+    // nothing. The tail collapses to empty rather than keeping it.
+    const budget = itemTokens(r('brief'));
+    const { summarize, keep } = partitionMessages(msgs, { keepBudgetTokens: budget });
+    expect(keep).toEqual([]);
+    expect(summarize).toEqual(msgs);
+  });
+
+  it('allows the tail to start at an ANCHORED reasoning item', () => {
+    const group = [r('why'), fc('{}'), fco('out'), a('done')];
+    const msgs = [u('x'.repeat(10_000)), ...group];
+    const budget = tokensOf(group);
+    const { keep } = partitionMessages(msgs, { keepBudgetTokens: budget });
+    expect(keep).toEqual(group);
+  });
+
+  it('no user messages at all: splitTurn walk over the whole array', () => {
+    const msgs = [a('x'.repeat(4_000)), a('tail-1'), a('tail-2')];
+    const budget = tokensOf([a('tail-1'), a('tail-2')]);
+    const { summarize, keep } = partitionMessages(msgs, { keepBudgetTokens: budget });
+    expect(summarize).toEqual([a('x'.repeat(4_000))]);
+    expect(keep).toEqual([a('tail-1'), a('tail-2')]);
+  });
+
+  it('derives the default budget from contextWindowTokens', () => {
+    // 16k window → floor(16k * 0.25) = 4000-token budget. Two ~3000-token
+    // turns: only the most recent fits.
+    const turn1 = [u('x'.repeat(11_000)), a('y')];
+    const turn2 = [u('z'.repeat(11_000)), a('w')];
+    const msgs = [...turn1, ...turn2];
+    const { keep } = partitionMessages(msgs, { contextWindowTokens: 16_000 });
+    expect(keep).toEqual(turn2);
+  });
+
+  it('handles the empty array', () => {
+    const { summarize, keep } = partitionMessages([], {});
+    expect(summarize).toEqual([]);
+    expect(keep).toEqual([]);
+  });
+});
+
+describe('resolveKeepBudgetTokens', () => {
+  it('clamps to the 8k ceiling on large windows', () => {
+    expect(resolveKeepBudgetTokens(200_000)).toBe(DEFAULT_KEEP_BUDGET_MAX_TOKENS);
+    expect(resolveKeepBudgetTokens(1_000_000)).toBe(DEFAULT_KEEP_BUDGET_MAX_TOKENS);
+  });
+
+  it('takes 25% of mid-size windows', () => {
+    expect(resolveKeepBudgetTokens(20_000)).toBe(5_000);
+    expect(KEEP_BUDGET_WINDOW_FRACTION).toBe(0.25);
+  });
+
+  it('clamps to the 2k floor on tiny windows', () => {
+    expect(resolveKeepBudgetTokens(4_000)).toBe(DEFAULT_KEEP_BUDGET_MIN_TOKENS);
+    expect(resolveKeepBudgetTokens(100)).toBe(DEFAULT_KEEP_BUDGET_MIN_TOKENS);
+  });
+
+  it('defaults to the 128k-window fallback (→ 8k) when no window is supplied', () => {
+    expect(resolveKeepBudgetTokens()).toBe(
+      Math.min(
+        DEFAULT_KEEP_BUDGET_MAX_TOKENS,
+        Math.floor(DEFAULT_CONTEXT_WINDOW_TOKENS * KEEP_BUDGET_WINDOW_FRACTION),
+      ),
+    );
+  });
+});
+
+describe('partitionMessages — tail-validity property (7.2)', () => {
+  // Deterministic LCG so failures are reproducible without a seed printout.
+  const lcg = (seed: number) => {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 2 ** 32;
+    };
+  };
+
+  const KINDS = [u, uBare, a, fc, fco, r] as const;
+
+  it('for arbitrary interleavings the keep tail never starts with an orphaned output or unanchored reasoning', () => {
+    const rand = lcg(0xc0ffee);
+    for (let trial = 0; trial < 250; trial++) {
+      const len = 1 + Math.floor(rand() * 12);
+      const msgs: unknown[] = [];
+      for (let i = 0; i < len; i++) {
+        const make = KINDS[Math.floor(rand() * KINDS.length)]!;
+        msgs.push(make('x'.repeat(1 + Math.floor(rand() * 400))));
+      }
+      const mode = rand();
+      const opts =
+        mode < 0.4
+          ? { keepRecentTurns: Math.floor(rand() * 5) }
+          : { keepBudgetTokens: 10 + Math.floor(rand() * 500) };
+      const { summarize, keep } = partitionMessages(msgs, opts);
+
+      // Partition is lossless and ordered.
+      expect([...summarize, ...keep]).toEqual(msgs);
+
+      // The validity invariant applies when a compaction would actually
+      // rewrite state (something got summarized). An empty summarize means
+      // compact() no-ops and the history is left untouched, so the existing
+      // (possibly already-odd) head is not the partition's doing.
+      if (summarize.length > 0 && keep.length > 0) {
+        const head = keep[0] as { type?: string };
+        expect(head.type).not.toBe('function_call_output');
+        if (head.type === 'reasoning') {
+          // A reasoning head must anchor to a following item.
+          expect(keep.length).toBeGreaterThan(1);
+        }
+      }
+    }
   });
 });

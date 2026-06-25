@@ -245,28 +245,188 @@ export function estimateMessagesCharLength(messages) {
     return serializeMessagesForEstimate(messages).length;
 }
 /**
- * Split a message array into a `summarize` prefix and a `keep` tail. The tail
- * length is `min(messages.length, keepRecentTurns)`. When the array is
- * shorter than the keep window, the prefix is empty and no compaction is
- * needed.
- *
- * Note: `keepRecentTurns` is interpreted at **message** granularity, not
- * strict conversational-turn granularity. The SDK's `InputsUnion` mixes user
- * messages, assistant output items, reasoning items, tool calls, and tool
- * results — a robust turn-boundary detector is deferred to a future card
- * (the v1 heuristic keeps the implementation predictable and dependency-free).
+ * Phase 7.2: lower clamp (in **tokens**) for the default token-budgeted keep
+ * tail. A tail below ~2k tokens carries too little working context for the
+ * model to resume coherently (opencode's exact lower bound).
  */
-export function partitionMessages(messages, keepRecentTurns) {
-    const keepCount = Math.max(0, Math.floor(keepRecentTurns));
-    if (messages.length <= keepCount) {
+export const DEFAULT_KEEP_BUDGET_MIN_TOKENS = 2_000;
+/**
+ * Phase 7.2: upper clamp (in **tokens**) for the default token-budgeted keep
+ * tail. Keeping more than ~8k tokens verbatim defeats the point of compacting
+ * on the large windows where 25% of usable space would otherwise be 50k+
+ * (opencode's exact upper bound).
+ */
+export const DEFAULT_KEEP_BUDGET_MAX_TOKENS = 8_000;
+/**
+ * Phase 7.2: fraction of the usable context window targeted by the default
+ * keep budget before clamping (opencode: 25% of usable).
+ */
+export const KEEP_BUDGET_WINDOW_FRACTION = 0.25;
+/**
+ * Phase 7.2: resolve the default keep-tail budget (in **tokens**):
+ * `clamp(floor(window * 0.25), 2k, 8k)`. With no window supplied the
+ * {@link DEFAULT_CONTEXT_WINDOW_TOKENS} fallback applies (→ 8k on 128k).
+ */
+export function resolveKeepBudgetTokens(contextWindowTokens) {
+    const window = contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
+    const target = Math.floor(window * KEEP_BUDGET_WINDOW_FRACTION);
+    return Math.min(DEFAULT_KEEP_BUDGET_MAX_TOKENS, Math.max(DEFAULT_KEEP_BUDGET_MIN_TOKENS, target));
+}
+function isRecord(item) {
+    return typeof item === 'object' && item !== null;
+}
+/**
+ * A turn boundary: a `user`-role message item (`type` absent or `'message'`).
+ * Matches both the SDK's typed item shape and the bare `{ role, content }`
+ * shape persisted by earlier sessions.
+ */
+function isUserMessage(item) {
+    if (!isRecord(item))
+        return false;
+    if (item.role !== 'user')
+        return false;
+    return item.type === undefined || item.type === 'message';
+}
+function isFunctionCallOutput(item) {
+    return isRecord(item) && item.type === 'function_call_output';
+}
+function isReasoning(item) {
+    return isRecord(item) && item.type === 'reasoning';
+}
+/** Per-item token estimate: chars/{@link CHARS_PER_TOKEN} of the JSON form. */
+function estimateItemTokens(item) {
+    return Math.ceil(serializeMessagesForEstimate([item]).length / CHARS_PER_TOKEN);
+}
+/**
+ * Advance `idx` forward to the nearest index that is a VALID tail start:
+ * never a `function_call_output` (its `function_call` would be stranded in
+ * the summarized prefix — the Responses API hard-400s on an orphaned output)
+ * and never an unanchored `reasoning` item (a reasoning item is glued to the
+ * item that FOLLOWS it; one with nothing after it is invalid). May return
+ * `messages.length` (empty tail) when no valid start exists.
+ */
+function advanceToValidTailStart(messages, idx) {
+    let i = idx;
+    while (i < messages.length &&
+        (isFunctionCallOutput(messages[i]) || (isReasoning(messages[i]) && i === messages.length - 1))) {
+        i++;
+    }
+    return i;
+}
+/**
+ * Phase 7.2 splitTurn analog (opencode): item-granular fallback for histories
+ * where whole-turn keeping is impossible — an oversized single turn, or a
+ * history with no user messages at all. Walks backward from the end keeping
+ * items while the budget holds, then advances the cut forward to a valid
+ * tail start so the tail never opens with an orphaned `function_call_output`
+ * or an unanchored `reasoning` item.
+ */
+function splitTurnCut(messages, from, budgetTokens) {
+    let acc = 0;
+    let tentative = messages.length;
+    for (let i = messages.length - 1; i >= from; i--) {
+        acc += estimateItemTokens(messages[i]);
+        if (acc > budgetTokens)
+            break;
+        tentative = i;
+    }
+    return advanceToValidTailStart(messages, tentative);
+}
+/**
+ * Split a message array into a `summarize` prefix and a `keep` tail.
+ *
+ * Phase 7.2: the keep tail is **turn-boundary-safe** — it starts at a
+ * `user`-role message (a turn boundary), so the rebuilt history never opens
+ * with an orphaned `function_call_output` (a hard 400 on the Responses API)
+ * or a reasoning item stranded from the item it anchors. Only the keep tail
+ * re-enters the conversation as live API items; the summarize prefix is
+ * JSON-stringified into the summarizer's input, where item validity does not
+ * apply.
+ *
+ * Two keep modes:
+ *
+ * - **Token budget (default)** — whole turns are kept newest-first while
+ *   their combined chars/{@link CHARS_PER_TOKEN} estimate fits
+ *   `keepBudgetTokens` (default {@link resolveKeepBudgetTokens}: 25% of the
+ *   window clamped 2k–8k). When even the most recent turn alone exceeds the
+ *   budget (a tool-heavy oversized turn), an item-granular splitTurn
+ *   fallback keeps the most recent items that fit, advanced to a valid tail
+ *   start — never an orphaned fragment.
+ * - **`keepRecentTurns` override** — keeps the last N turns verbatim at TRUE
+ *   turn granularity (v1 counted messages; a bare number passed for `opts`
+ *   selects this mode for back-compat). Fewer than N turns → nothing is
+ *   summarized. `0` → everything is summarized.
+ *
+ * Histories containing no user messages at all (no turn boundaries) fall
+ * back to item granularity: the v1 trailing-N slice under
+ * `keepRecentTurns`, or the splitTurn budget walk otherwise — in both cases
+ * snapped forward to a valid tail start.
+ */
+export function partitionMessages(messages, opts) {
+    const options = typeof opts === 'number' ? { keepRecentTurns: opts } : opts;
+    if (messages.length === 0) {
         return { summarize: [], keep: messages };
     }
-    const cut = messages.length - keepCount;
+    const turnStarts = [];
+    for (let i = 0; i < messages.length; i++) {
+        if (isUserMessage(messages[i]))
+            turnStarts.push(i);
+    }
+    let cut;
+    if (options.keepRecentTurns !== undefined) {
+        const keepTurns = Math.max(0, Math.floor(options.keepRecentTurns));
+        if (keepTurns === 0) {
+            cut = messages.length;
+        }
+        else if (turnStarts.length === 0) {
+            // No turn boundaries — v1 message-granularity fallback, snapped to a
+            // valid tail start.
+            cut = advanceToValidTailStart(messages, Math.max(0, messages.length - keepTurns));
+        }
+        else if (turnStarts.length < keepTurns) {
+            return { summarize: [], keep: messages };
+        }
+        else {
+            cut = turnStarts[turnStarts.length - keepTurns];
+        }
+    }
+    else {
+        const budget = options.keepBudgetTokens ?? resolveKeepBudgetTokens(options.contextWindowTokens);
+        if (turnStarts.length === 0) {
+            cut = splitTurnCut(messages, 0, budget);
+        }
+        else {
+            // Accumulate whole turns newest-first while the budget holds.
+            let acc = 0;
+            cut = messages.length;
+            for (let k = turnStarts.length - 1; k >= 0; k--) {
+                const start = turnStarts[k];
+                let turnTokens = 0;
+                for (let i = start; i < cut; i++)
+                    turnTokens += estimateItemTokens(messages[i]);
+                if (acc + turnTokens > budget)
+                    break;
+                acc += turnTokens;
+                cut = start;
+            }
+            if (cut === messages.length) {
+                // Even the most recent turn alone exceeds the budget — oversized
+                // (tool-heavy) turn. Keep the most recent complete group instead.
+                cut = splitTurnCut(messages, turnStarts[turnStarts.length - 1], budget);
+            }
+        }
+    }
     return {
         summarize: messages.slice(0, cut),
         keep: messages.slice(cut),
     };
 }
-/** Default number of trailing messages preserved verbatim during compaction. */
+/**
+ * Legacy v1 default for the trailing keep window. Phase 7.2: no longer
+ * applied implicitly — when `keepRecentTurns` is not supplied, the partition
+ * uses the token-budgeted keep tail ({@link resolveKeepBudgetTokens})
+ * instead. Exported for back-compat with consumers that referenced the v1
+ * default.
+ */
 export const DEFAULT_KEEP_RECENT_TURNS = 5;
 //# sourceMappingURL=compaction.js.map

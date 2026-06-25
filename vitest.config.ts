@@ -40,6 +40,10 @@ export default defineConfig({
         // uncovered in agent.ts: the contractually-unreachable catch around
         // ModelContextLengthCache.get() and the never-break-the-live-run
         // catch in the mid-run threshold check.
+        //
+        // Phase 7.2 (turn-boundary-safe partition): turn-granularity keep
+        // tail + token-budgeted default; the new partition machinery is
+        // 100%-covered in compaction.ts. Functions stay at 98.6.
         statements: 98.9,
         branches: 96.2,
         functions: 98.6,

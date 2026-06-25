@@ -208,10 +208,13 @@ export type HookPayload =
     }
   /**
    * Phase 5.1: fires immediately BEFORE a context-compaction call runs, with
-   * the message prefix that is about to be condensed and the `keepRecentTurns`
-   * window the runtime decided to preserve verbatim. `reason` is `'auto'` when
-   * the per-turn threshold check triggered the compaction, `'manual'` when
-   * {@link OpenRouterAgentRun.compact} was called explicitly.
+   * the message prefix that is about to be condensed and the keep window the
+   * runtime decided to preserve verbatim. Phase 7.2: exactly one of
+   * `keepRecentTurns` (caller-supplied turn-count override) or
+   * `keepBudgetTokens` (the resolved default token budget for the keep tail)
+   * is present, identifying which keep mode drove the partition. `reason` is
+   * `'auto'` when the per-turn threshold check triggered the compaction,
+   * `'manual'` when {@link OpenRouterAgentRun.compact} was called explicitly.
    *
    * Audit-only — the hook's return value is ignored and a thrown error is
    * logged + swallowed (compaction proceeds regardless). Consumers typically
@@ -223,7 +226,8 @@ export type HookPayload =
   | {
       event: 'PreCompact';
       messages: unknown;
-      keepRecentTurns: number;
+      keepRecentTurns?: number;
+      keepBudgetTokens?: number;
       reason: 'auto' | 'manual';
     }
   /**
