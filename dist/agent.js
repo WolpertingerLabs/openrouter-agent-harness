@@ -1563,6 +1563,38 @@ export class OpenRouterAgentRun {
                             }
                             continue;
                         }
+                        // New output-item boundary. The raw stream delimits every output
+                        // item with `response.output_item.added`; for `message` and
+                        // `reasoning` items the harness otherwise flattens consecutive
+                        // items into a boundary-less run of `text_delta`/`reasoning_delta`s.
+                        // Emit a `message_item_start` BEFORE that item's deltas so a
+                        // consumer can flush the current live message/thinking block and
+                        // begin a fresh, discrete one (see the event's JSDoc in
+                        // src/events.ts). Purely additive — the deltas themselves are
+                        // untouched. `function_call` / server-tool items already flush via
+                        // their own `tool_call` / `server_tool` events, so they are skipped
+                        // here. Abort-first, matching the sibling handlers.
+                        if ('type' in event && event.type === 'response.output_item.added') {
+                            if (signal.aborted)
+                                continue;
+                            const item = event.item;
+                            if (item.type === 'message' || item.type === 'reasoning') {
+                                const outputIndex = event.outputIndex;
+                                const phase = item.phase;
+                                const sessionIdOnItem = item.session_id;
+                                sawAssistantActivity = true;
+                                yield {
+                                    type: 'message_item_start',
+                                    kind: item.type,
+                                    itemId: typeof item.id === 'string' ? item.id : '',
+                                    ...(typeof outputIndex === 'number' && { outputIndex }),
+                                    ...(item.type === 'message' &&
+                                        (phase === 'commentary' || phase === 'final_answer') && { phase }),
+                                    ...(typeof sessionIdOnItem === 'string' && { sessionId: sessionIdOnItem }),
+                                };
+                            }
+                            continue;
+                        }
                         if ('type' in event && event.type === 'response.output_item.done') {
                             if (signal.aborted)
                                 continue;
