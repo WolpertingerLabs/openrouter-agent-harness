@@ -21,6 +21,42 @@ export type AgentCoreEvent =
    * are dropped at the source (parity with `text_delta`).
    */
   | { type: 'reasoning_delta'; content: string }
+  | {
+      /**
+       * Boundary marker emitted at the START of each new `message` or
+       * `reasoning` output item, BEFORE any of that item's deltas. The raw OR
+       * Responses stream delimits items with `response.output_item.added` /
+       * `response.output_item.done`, but the harness otherwise flattens
+       * consecutive `message`/`reasoning` items into a boundary-less run of
+       * `text_delta`/`reasoning_delta` events — a downstream consumer cannot
+       * tell where one assistant message ends and the next begins. This event
+       * restores that boundary: it is PURELY ADDITIVE (the deltas that follow
+       * are unchanged — no trimming, no separators, no combining) and lets a
+       * consumer flush the live message/thinking block and begin a fresh,
+       * discrete one at each new item.
+       *
+       * Emitted once per `message` / `reasoning` output item, on its
+       * `response.output_item.added` event. `kind` distinguishes a text bubble
+       * (`'message'`) from a thinking block (`'reasoning'`). Server-tool and
+       * `function_call` items already flush naturally via their own
+       * `server_tool` / `tool_call` events and do NOT emit this boundary.
+       *
+       * - `itemId` — the raw item's `id`.
+       * - `outputIndex` — the item's position in the response output array
+       *   (from the `response.output_item.added` envelope), when present.
+       * - `phase` — for `message` items, `'commentary'` (intermediate) vs
+       *   `'final_answer'` (the turn's final assistant message); absent for
+       *   `reasoning` items, which carry no phase.
+       * - `sessionId` — surfaced only when the proxy stamped a `session_id` on
+       *   the raw output item.
+       */
+      type: 'message_item_start';
+      kind: 'message' | 'reasoning';
+      itemId: string;
+      outputIndex?: number;
+      phase?: 'commentary' | 'final_answer';
+      sessionId?: string;
+    }
   | { type: 'tool_call'; callId: string; name: string; input: unknown }
   | { type: 'tool_result'; callId: string; output: unknown; isError: boolean }
   | {
