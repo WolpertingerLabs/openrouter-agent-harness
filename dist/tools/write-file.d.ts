@@ -10,5 +10,7 @@ export declare function writeFileTool(ctx?: ToolContext): import("@openrouter/ag
 }, unknown, z.core.$ZodTypeInternals<{
     path: string;
     bytesWritten: number;
-}, unknown>>, Record<string, unknown>>;
+}, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=write-file.d.ts.map

@@ -14,5 +14,7 @@ export declare function editFileTool(ctx?: ToolContext): import("@openrouter/age
     path: string;
     replaced: boolean;
     replacedCount: number;
-}, unknown>>, Record<string, unknown>>;
+}, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=edit-file.d.ts.map

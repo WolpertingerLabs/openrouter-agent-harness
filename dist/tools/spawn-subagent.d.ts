@@ -262,7 +262,9 @@ export declare function spawnSubagentTool(opts: SpawnSubagentToolOptions, ctx?: 
         minimal: "minimal";
         none: "none";
     }>>;
-}, z.core.$strip>, z.core.$ZodType<SpawnSubagentToolResult, unknown, z.core.$ZodTypeInternals<SpawnSubagentToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<SpawnSubagentToolResult, unknown, z.core.$ZodTypeInternals<SpawnSubagentToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 /**
  * Options accepted by {@link spawnSubagentsTool} (Phase 4.9). Shape-mirrors
  * {@link SpawnSubagentToolOptions} for the inheritance fields and adds a
@@ -406,5 +408,7 @@ export declare function spawnSubagentsTool(opts: SpawnSubagentsToolOptions, ctx?
             none: "none";
         }>>;
     }, z.core.$strip>>;
-}, z.core.$strip>, z.core.$ZodType<SpawnSubagentsToolResult, unknown, z.core.$ZodTypeInternals<SpawnSubagentsToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<SpawnSubagentsToolResult, unknown, z.core.$ZodTypeInternals<SpawnSubagentsToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=spawn-subagent.d.ts.map

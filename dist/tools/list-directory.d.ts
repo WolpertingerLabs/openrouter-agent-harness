@@ -8,5 +8,7 @@ export declare function listDirectoryTool(ctx?: ToolContext): import("@openroute
 }, unknown, z.core.$ZodTypeInternals<{
     path: string;
     entries: string[];
-}, unknown>>, Record<string, unknown>>;
+}, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=list-directory.d.ts.map

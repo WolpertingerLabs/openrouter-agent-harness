@@ -170,7 +170,9 @@ export interface ToolSearchToolOptions {
 export declare function toolSearchTool(opts: ToolSearchToolOptions, _ctx?: ToolContext): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     query: z.ZodString;
     limit: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>, z.core.$ZodType<ToolSearchToolResult, unknown, z.core.$ZodTypeInternals<ToolSearchToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<ToolSearchToolResult, unknown, z.core.$ZodTypeInternals<ToolSearchToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 /**
  * Factory inputs for {@link toolLoadTool}. The agent wires:
  *
@@ -198,5 +200,7 @@ export interface ToolLoadToolOptions {
  */
 export declare function toolLoadTool(opts: ToolLoadToolOptions, _ctx?: ToolContext): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     names: z.ZodArray<z.ZodString>;
-}, z.core.$strip>, z.core.$ZodType<ToolLoadToolResult, unknown, z.core.$ZodTypeInternals<ToolLoadToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<ToolLoadToolResult, unknown, z.core.$ZodTypeInternals<ToolLoadToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=tool-search.d.ts.map

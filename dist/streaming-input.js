@@ -23,11 +23,15 @@ export function normalizeUserInput(msg) {
     return msg;
 }
 /**
- * Convert a {@link UserInput} into the `EasyInputMessage`-shaped item the
- * OpenRouter Responses API accepts in `callModel({ input })`. Always emits
- * `role: 'user'`; passes `content` through untouched (string-or-array). The
- * SDK / OR API handles the union internally — no client-side validation is
- * performed here (see {@link UserInput} JSDoc for the rationale).
+ * Convert a {@link UserInput} into the `EasyInputMessage` item the OpenRouter
+ * Responses API accepts in `callModel({ input })`. Always emits
+ * `role: 'user'`; passes `content` through untouched (string-or-array).
+ *
+ * The single `as` lives here, at the one boundary where the deliberately
+ * lenient public `UserInput.content` (`ReadonlyArray<unknown>`) meets the
+ * SDK's narrower, mutable content union. Returning the SDK type means the
+ * `callModel({ input })` call site needs no cast of its own; the SDK still
+ * validates the blocks at request time (see {@link UserInput} JSDoc).
  */
 export function userInputToCallModelItem(input) {
     return { role: 'user', content: input.content };

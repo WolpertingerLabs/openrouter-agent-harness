@@ -1942,6 +1942,86 @@ describe('OpenRouterAgentRun modelParams passthrough', () => {
   });
 });
 
+describe('OpenRouterAgentRun final-response pinning', () => {
+  const simpleTurn = () =>
+    fakeCallModel({
+      events: [
+        { type: 'turn.start', turnNumber: 0 },
+        { type: 'turn.end', turnNumber: 0 },
+      ],
+    });
+
+  it('pins `allowFinalResponse: false` on the callModel request', async () => {
+    // Regression pin for the @openrouter/agent 0.7.2 → 0.8.0 bump, which
+    // flipped this flag from opt-in to opt-out. Left unset, a `stopWhen`
+    // break with pending tool calls (i.e. hitting `maxBudgetUsd`) would cost
+    // one extra billable request PAST the budget ceiling and inject an
+    // SDK-authored user message into persisted state. See the rationale
+    // comment at the callModel site in agent.ts.
+    callModelMock.mockImplementation(simpleTurn());
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.allowFinalResponse).toBe(false);
+    // Guard the premise the flag protects: it is meaningless without the
+    // stopWhen pair (stepCountIs + maxCost) that trips at the ceilings.
+    expect(args.stopWhen).toHaveLength(2);
+  });
+
+  it('never lets modelParams re-enable allowFinalResponse', async () => {
+    // Ordering pin: `allowFinalResponse` must sit AFTER the
+    // `...this.opts.modelParams` spread so the caller cannot clobber it.
+    callModelMock.mockImplementation(simpleTurn());
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+      modelParams: { allowFinalResponse: true },
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.allowFinalResponse).toBe(false);
+  });
+
+  it('pins `strictFinalResponse: true` on the callModel request', async () => {
+    // Regression pin for the same 0.7.2 → 0.8.0 bump. 0.8.0 added an
+    // empty-final-output retry that fires when >=1 tool round ran and
+    // `strictFinalResponse` is not true. That retry never invokes
+    // `onTurnEnd`, which is the only place this run accumulates spend, so
+    // its cost would be dropped from `totalCostUsd` — under-counting
+    // `maxBudgetUsd` and under-reporting `stream_complete.costUsd`.
+    // Setting it restores 0.7.2's throw on empty final output.
+    callModelMock.mockImplementation(simpleTurn());
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.strictFinalResponse).toBe(true);
+  });
+
+  it('never lets modelParams disable strictFinalResponse', async () => {
+    // Ordering pin: `strictFinalResponse` must sit AFTER the
+    // `...this.opts.modelParams` spread so the caller cannot clobber it.
+    callModelMock.mockImplementation(simpleTurn());
+    const run = new OpenRouterAgentRun({
+      apiKey: 'k',
+      sessionId: TEST_SESSION,
+      prompt: 'p',
+      modelParams: { strictFinalResponse: false },
+    });
+    await collect(run);
+    const args = callModelMock.mock.calls[0][0];
+    expect(args.strictFinalResponse).toBe(true);
+  });
+});
+
 describe('OpenRouterAgentRun cwd threading', () => {
   it('captures process.cwd() as the default cwd', async () => {
     // Drive a tool call through the wrapped read_file tool and observe that

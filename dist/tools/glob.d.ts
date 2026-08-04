@@ -11,5 +11,7 @@ export declare function globTool(ctx?: ToolContext): import("@openrouter/agent")
     pattern: z.ZodString;
     path: z.ZodDefault<z.ZodString>;
     case_sensitive: z.ZodDefault<z.ZodBoolean>;
-}, z.core.$strip>, z.core.$ZodType<GlobResult, unknown, z.core.$ZodTypeInternals<GlobResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<GlobResult, unknown, z.core.$ZodTypeInternals<GlobResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=glob.d.ts.map
