@@ -190,6 +190,28 @@ export function canonicalizeOr(
         tokenUsage = usage;
         break;
       }
+      case 'message_item_start':
+        // OR-only, purely additive output-item boundary marker (see the
+        // `message_item_start` block in src/events.ts). It carries no
+        // content — it only tells a downstream consumer where one `message`
+        // /`reasoning` item ends and the next begins so a live renderer can
+        // flush its bubble. The Anthropic SDK exposes no equivalent signal
+        // (it coalesces an assistant turn into a single `assistant`
+        // message), so there is nothing on the other side to compare it
+        // against. Drop it from the projection: the following `text_delta`
+        // /`reasoning_delta` still carries the content, and the turn-bracket
+        // synthesis above still opens on that delta, so the projection is
+        // byte-identical to the pre-boundary-event behavior.
+        //
+        // Deliberately NOT `openBracketIfNeeded()`: a `reasoning`-kind
+        // boundary can be emitted for an item the comparator projects no
+        // content for, which would open a bracket that never closes.
+        //
+        // This is an explicit case rather than a `default` fallthrough on
+        // purpose — the `default` branch below must stay loud so a genuinely
+        // unknown future event still surfaces as a divergence instead of
+        // being silently swallowed.
+        break;
       case 'error':
         events.push({ type: 'error', message: ev.message });
         hookOrder.push('error');

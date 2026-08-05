@@ -16,6 +16,13 @@
 # scenarios/15-truncated-stream.json). DO NOT widen the harness's 30s default
 # — narrow per-scenario overrides surface slow scenarios; a global widening
 # would mask future regressions.
+#
+# Dependency note: `@anthropic-ai/claude-agent-sdk` is pinned EXACTLY in
+# package.json (no caret). The recorded request hashes include the bundled
+# `claude` CLI's built-in tool descriptions, so any version drift makes every
+# scenario script-miss; the emulator 500s, the SDK burns its retry loop, and
+# the harness timeout surfaces it as a misleading "Claude Code process aborted
+# by user". See src/__tests__/comparative/README.md before touching that pin.
 name: Comparative parity (emulated)
 
 on:
