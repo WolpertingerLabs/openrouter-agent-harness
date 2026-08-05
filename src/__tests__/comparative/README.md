@@ -92,6 +92,43 @@ per-scenario cap AND the aggregate cap will surface it.
   no-op in emulated mode; the field exists on the transcripts but the
   monitor never trips.
 
+## `@anthropic-ai/claude-agent-sdk` is pinned EXACTLY — do not add a caret
+
+`package.json` pins `"@anthropic-ai/claude-agent-sdk": "0.3.150"` with **no
+caret**. This is load-bearing, not tidiness.
+
+The emulator matches a request by hashing its canonicalized body, and that
+body includes the `tools` array — i.e. the bundled `claude` CLI's built-in
+tool palette and every tool's full description text. Those descriptions are
+part of the CLI build, so **any** version bump can change them, which changes
+every recorded `promptHash` in `scenarios/*.json` at once.
+
+When that happens the failure is maximally misleading:
+
+1. Every Anthropic-side request script-misses → the emulator returns HTTP 500.
+2. The agent SDK treats 500 as retryable and burns its 10-attempt
+   exponential-backoff loop (~30s+).
+3. The harness's 30s `timeoutMs` fires first and aborts the subprocess.
+4. The test reports `Error: Claude Code process aborted by user` — which reads
+   like a crash or a hang, with no hint that a hash mismatch caused it.
+
+This is exactly what happened when a lockfile regeneration silently floated
+the caret range `^0.3.150` to `0.3.179` (the palette gained `DesignSync` /
+`Workflow`, dropped `Glob` / `Grep`, and renamed `Task` → `Agent`). The gate
+went red on every PR for weeks and the whole suite ran 17 minutes instead of
+2-3 because 20 scenarios each sat through the retry loop.
+
+To intentionally move to a newer SDK, the fixtures must be **re-recorded
+against that exact version** and the pin bumped in the same commit. Note that
+`scripts/record-fixture.ts` only covers the OR side; the Anthropic-side
+hashes need the manual capture workflow in
+[`scenarios/README.md`](scenarios/README.md).
+
+If you are debugging a suspicious `aborted by user` failure, set
+`DEBUG_COMPARATIVE_HASH=1` — the script engine dumps the computed hash, the
+canonical request body, and the registered catalog to
+`tmp/comparative-hash-dump/` on each unique miss.
+
 ## Adding a new scenario
 
 See [`scenarios/README.md`](scenarios/README.md) for the manual capture

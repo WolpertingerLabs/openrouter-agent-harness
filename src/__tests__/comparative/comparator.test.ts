@@ -115,6 +115,85 @@ describe('compareTranscripts — identical transcripts', () => {
   });
 });
 
+// ----- Additive OR-only events are non-comparable -----
+//
+// `message_item_start` is a purely additive OR-side output-item boundary
+// marker with no Anthropic counterpart (see src/events.ts). The comparator
+// must project it away, not surface it as an `unknown_or_event` error —
+// otherwise every scenario diverges at the first assistant item the moment
+// the OR SDK starts emitting boundaries. Regression guard for the gate
+// breakage introduced alongside the event.
+
+describe('compareTranscripts — additive OR-only boundary events', () => {
+  it('ignores message_item_start so the projection matches the Anthropic side', async () => {
+    const { anth, or } = buildIdenticalPair();
+    // Interleave boundary markers exactly where the SDK emits them: on each
+    // output item's `response.output_item.added`, BEFORE that item's deltas.
+    const withBoundaries = orTranscript([
+      or.events[0]!, // session_started
+      or.events[1]!, // turn_start
+      {
+        type: 'message_item_start',
+        kind: 'message',
+        itemId: 'item-0',
+        outputIndex: 0,
+        phase: 'final_answer',
+      },
+      ...or.events.slice(2),
+    ]);
+
+    const result = await compareTranscripts(anth, withBoundaries, exactConfig, {
+      scenarioName: 'message-item-start-ignored',
+      failureDumpRoot: dumpRoot,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.pass).toBe(true);
+    expect(result.report).not.toContain('unknown_or_event');
+  });
+
+  it('ignores a reasoning-kind boundary without opening a stray turn bracket', async () => {
+    // A `reasoning` boundary projects no content. If it opened a synthesized
+    // turn bracket, the bracket would never close and the event stream would
+    // gain a spurious turn_start/turn_end pair.
+    const { anth, or } = buildIdenticalPair();
+    const withReasoningBoundary = orTranscript([
+      or.events[0]!,
+      or.events[1]!,
+      { type: 'message_item_start', kind: 'reasoning', itemId: 'item-r' },
+      ...or.events.slice(2),
+    ]);
+
+    const result = await compareTranscripts(anth, withReasoningBoundary, exactConfig, {
+      scenarioName: 'message-item-start-reasoning',
+      failureDumpRoot: dumpRoot,
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.pass).toBe(true);
+  });
+
+  it('still reports a genuinely unknown OR event as a loud divergence', async () => {
+    // The `default` fallthrough must stay loud — dropping message_item_start
+    // must not turn into "silently swallow anything we do not recognize".
+    const { anth, or } = buildIdenticalPair();
+    const withUnknown = orTranscript([
+      or.events[0]!,
+      or.events[1]!,
+      { type: 'some_future_event' } as unknown as AgentCoreEvent,
+      ...or.events.slice(2),
+    ]);
+
+    const result = await compareTranscripts(anth, withUnknown, exactConfig, {
+      scenarioName: 'unknown-or-event-still-loud',
+      failureDumpRoot: dumpRoot,
+    });
+
+    expect(result.pass).toBe(false);
+    expect(result.report).toContain('unknown_or_event:some_future_event');
+  });
+});
+
 // ----- Divergence detection -----
 
 describe('compareTranscripts — event-stream divergence', () => {
