@@ -89,5 +89,7 @@ export declare function grepFilesTool(ctx?: ToolContext): import("@openrouter/ag
     files?: undefined;
     totalMatches?: undefined;
     perFile?: undefined;
-}, unknown>>, Record<string, unknown>>;
+}, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=grep-files.d.ts.map

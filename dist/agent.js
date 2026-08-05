@@ -1312,8 +1312,9 @@ export class OpenRouterAgentRun {
                 const result = client.callModel({
                     // Caller-supplied passthrough (sampling params, `provider`, OR
                     // `plugins` like pareto's `minCodingScore`). Spread FIRST so every
-                    // structural field below — model/input/tools/state/stopWhen/include —
-                    // and the effort/cacheControl options win on key conflict.
+                    // structural field below — model/input/tools/state/stopWhen/
+                    // allowFinalResponse/strictFinalResponse/include — and the
+                    // effort/cacheControl options win on key conflict.
                     ...this.opts.modelParams,
                     model,
                     sessionId,
@@ -1322,6 +1323,41 @@ export class OpenRouterAgentRun {
                     tools: toolsForRun,
                     state,
                     stopWhen: [stepCountIs(maxTurns), maxCost(maxBudgetUsd)],
+                    // Pinned OFF deliberately. When `stopWhen` breaks the loop while the
+                    // model still has pending executable tool calls, agent >=0.8.0 issues
+                    // ONE MORE billable model request (`toolChoice: 'none'`) to coerce a
+                    // closing text answer, and appends its own user-role directive
+                    // ("You have reached the tool-use limit...") into the conversation —
+                    // which then lands in persisted `ConversationState` and the
+                    // transcript. Two reasons we opt out:
+                    //
+                    // 1. Budget-ceiling integrity. `maxBudgetUsd` is advertised as a
+                    //    ceiling; `maxCost(maxBudgetUsd)` is precisely the stopWhen that
+                    //    fires at that ceiling. Spending an extra request *past* the cap
+                    //    that just tripped would make the ceiling a suggestion.
+                    // 2. No silent behavior change on a dependency bump. This flag was
+                    //    opt-in through agent 0.7.2 (`=== true || typeof === 'string'`)
+                    //    and became opt-out in 0.8.0 (`!== false`), so leaving it unset
+                    //    would have flipped runtime behavior as a side effect of the
+                    //    version bump alone.
+                    //
+                    // Adopting the new default (and surfacing the synthesized turn
+                    // through our event/transcript layers) is a product decision, and is
+                    // deliberately deferred to its own change.
+                    allowFinalResponse: false,
+                    // Sibling pin, same two reasons. `strictFinalResponse` is also new
+                    // in 0.8.0 and also defaults ON: after >=1 tool round, an empty final
+                    // output triggers one more billable request (`retryCurrentRequest`)
+                    // to coax a closing text turn. That retry never calls `onTurnEnd` —
+                    // the sole place this run accumulates spend — and the end-of-cycle
+                    // top-up below is gated on `totalCostUsd === 0`, which a run with
+                    // tool rounds never satisfies. So its cost is silently dropped:
+                    // `maxBudgetUsd` under-counts and `stream_complete.costUsd`
+                    // under-reports. Setting it restores 0.7.2's unconditional throw on
+                    // empty final output — the behaviour this harness's own
+                    // {@link EmptyModelResponseError} transient-retry path is built
+                    // around.
+                    strictFinalResponse: true,
                     // Always request encrypted reasoning content. The agent never sends
                     // `store: true`, and OpenAI's Responses contract for store:false
                     // reasoning models only guarantees `encrypted_content` on reasoning
@@ -1334,14 +1370,11 @@ export class OpenRouterAgentRun {
                     // Gemini (own encrypted thought-signature items) routed models.
                     include: ['reasoning.encrypted_content'],
                     ...(this.opts.effort !== undefined && { reasoning: { effort: this.opts.effort } }),
-                    // Forward OR auto-cache directive when set. Pinned SDK 0.12.35 doesn't
-                    // declare `cacheControl` on `ResponsesRequest`, so we widen the
-                    // typecheck here; the value flows through OR's request body once the
-                    // SDK adds the field (or via passthrough at runtime on newer SDKs).
-                    ...(this.opts.cacheControl !== undefined &&
-                        {
-                            cacheControl: this.opts.cacheControl,
-                        }),
+                    // Forward OR auto-cache directive when set. The pinned SDK declares
+                    // `cacheControl` on `ResponsesRequest`, so this needs no widening.
+                    ...(this.opts.cacheControl !== undefined && {
+                        cacheControl: this.opts.cacheControl,
+                    }),
                     onTurnEnd: async (_turnCtx, response) => {
                         if (persistSession) {
                             const generationId = createGenerationId();

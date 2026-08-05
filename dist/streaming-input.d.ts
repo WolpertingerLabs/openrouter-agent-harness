@@ -1,4 +1,5 @@
 import type { ConversationState } from '@openrouter/agent';
+import type { EasyInputMessage } from '@openrouter/sdk/models';
 /**
  * Phase 5.3: a single user-turn payload pushed into an
  * {@link import('./agent.js').OpenRouterAgentRun} via the streaming-input
@@ -13,10 +14,13 @@ import type { ConversationState } from '@openrouter/agent';
  * agent EMITS as part of the assistant/user transcript.
  *
  * `content` accepts either a plain string or a lenient `ReadonlyArray<unknown>`
- * of OpenRouter content blocks (text / image / file / audio / video). The
- * library performs NO client-side validation on the array shape — OR's
- * Responses API does the Zod-level validation server-side, and replicating it
- * here would risk drift from OR's canonical schema. See the README parity
+ * of OpenRouter content blocks (text / image / file / audio / video). This
+ * harness adds no validation of its own, but the array is NOT forwarded
+ * unchecked: the pinned `@openrouter/sdk` validates every block against its
+ * own content-block union before the request leaves the process, so an
+ * unrecognized block is rejected locally with `Input validation failed`
+ * rather than reaching OR. Every block type the README documents passes; a
+ * block type newer than the pinned SDK will not. See the README parity
  * matrix's "Streaming input" row for the per-block reference.
  */
 export interface UserInput {
@@ -38,15 +42,18 @@ export declare function isAsyncIterable<T>(value: unknown): value is AsyncIterab
  */
 export declare function normalizeUserInput(msg: UserInput | string): UserInput;
 /**
- * Convert a {@link UserInput} into the `EasyInputMessage`-shaped item the
- * OpenRouter Responses API accepts in `callModel({ input })`. Always emits
- * `role: 'user'`; passes `content` through untouched (string-or-array). The
- * SDK / OR API handles the union internally — no client-side validation is
- * performed here (see {@link UserInput} JSDoc for the rationale).
+ * Convert a {@link UserInput} into the `EasyInputMessage` item the OpenRouter
+ * Responses API accepts in `callModel({ input })`. Always emits
+ * `role: 'user'`; passes `content` through untouched (string-or-array).
+ *
+ * The single `as` lives here, at the one boundary where the deliberately
+ * lenient public `UserInput.content` (`ReadonlyArray<unknown>`) meets the
+ * SDK's narrower, mutable content union. Returning the SDK type means the
+ * `callModel({ input })` call site needs no cast of its own; the SDK still
+ * validates the blocks at request time (see {@link UserInput} JSDoc).
  */
-export declare function userInputToCallModelItem(input: UserInput): {
+export declare function userInputToCallModelItem(input: UserInput): EasyInputMessage & {
     role: 'user';
-    content: UserInput['content'];
 };
 /**
  * Streaming-input source abstraction. Drains the in-memory `pushUserMessage`

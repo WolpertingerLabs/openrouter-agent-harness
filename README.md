@@ -14,6 +14,44 @@ See [`plans/callboard-compatibility.md`](./plans/callboard-compatibility.md) for
 npm install @wolpertingerlabs/openrouter-agent-harness
 ```
 
+### The `@openrouter/sdk` override
+
+`package.json` carries an `overrides` block:
+
+```json
+"overrides": { "@openrouter/sdk": "^1.2.7" }
+```
+
+`@openrouter/agent` 0.8.0 still declares `@openrouter/sdk: ^0.13.7`. Without the
+override, npm installs a nested 0.13.x copy for the agent alongside our hoisted
+1.x, and the two SDK versions disagree at the type and validation layer where
+the harness passes SDK types across the agent boundary. The override forces a
+single hoisted 1.2.7.
+
+To be clear about what this is: **no API the harness uses requires 1.x.** The
+0.13 line supplies everything we touch, `cacheControl` on `ResponsesRequest`
+included. Running 1.x is a deliberate choice to track the current major rather
+than be stranded on 0.13.x, taken knowing the agent has not declared support
+for it.
+
+That combination is validated rather than assumed: every module agent 0.8.0
+imports from the SDK is byte-identical between 0.13.67 and 1.2.7 — `core`,
+`models/easyinputmessage`, `hooks/hooks`, `hooks/types`, and
+`models/errors/openroutererror` (whose `statusCode`/`body` this harness parses)
+— with the single exception noted below. Build, lint, and the full suite pass.
+
+This works because agent 0.8.0 reaches the Responses endpoint through
+`betaResponsesSend`, which 1.2.7 still ships as a deprecated alias
+(`export const betaResponsesSend = responsesSend`) kept for the
+`beta.responses` deprecation window. Its sunset date is TBD — when the alias is
+removed, agent must be on a version that imports `responsesSend` directly.
+
+**Remove the override** once `@openrouter/agent` declares `@openrouter/sdk: ^1.x`
+itself.
+
+Note that `overrides` is npm-specific. Yarn hosts need the equivalent
+`resolutions` entry, pnpm hosts `pnpm.overrides`.
+
 ## Quick start
 
 ```ts
@@ -659,7 +697,7 @@ yield {
 };
 ```
 
-Each yielded block is passed verbatim into the OR Responses API; the library performs no client-side validation on the array shape (OR's API does the Zod-level check server-side, which avoids drift from its canonical schema).
+Each yielded block is passed verbatim into the OR Responses API. This harness adds no validation of its own, but the pinned `@openrouter/sdk` checks every block against its content-block union before the request is sent — an unrecognized block fails locally with `Input validation failed` instead of reaching OR. The block types documented above pass; a block type newer than the pinned SDK will not.
 
 **Loop semantics:**
 

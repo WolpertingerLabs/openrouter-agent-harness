@@ -21,5 +21,7 @@ export declare function monitorTool(ctx?: ToolContext): import("@openrouter/agen
     pattern: z.ZodOptional<z.ZodString>;
     max_lines: z.ZodOptional<z.ZodNumber>;
     max_duration_ms: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>, z.core.$ZodType<MonitorResult | MonitorError, unknown, z.core.$ZodTypeInternals<MonitorResult | MonitorError, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<MonitorResult | MonitorError, unknown, z.core.$ZodTypeInternals<MonitorResult | MonitorError, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=monitor.d.ts.map

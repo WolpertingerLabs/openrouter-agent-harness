@@ -60,7 +60,9 @@ export interface TaskUpdateToolResult {
 export declare function taskCreateTool(ctx?: ToolContext, opts?: TaskToolOptions): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     content: z.ZodString;
     activeForm: z.ZodOptional<z.ZodString>;
-}, z.core.$strip>, z.core.$ZodType<TaskCreateToolResult, unknown, z.core.$ZodTypeInternals<TaskCreateToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<TaskCreateToolResult, unknown, z.core.$ZodTypeInternals<TaskCreateToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 export declare function taskUpdateTool(ctx?: ToolContext, opts?: TaskToolOptions): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     taskId: z.ZodString;
     state: z.ZodEnum<{
@@ -70,5 +72,7 @@ export declare function taskUpdateTool(ctx?: ToolContext, opts?: TaskToolOptions
         completed: "completed";
     }>;
     content: z.ZodOptional<z.ZodString>;
-}, z.core.$strip>, z.core.$ZodType<TaskUpdateToolResult, unknown, z.core.$ZodTypeInternals<TaskUpdateToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<TaskUpdateToolResult, unknown, z.core.$ZodTypeInternals<TaskUpdateToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=tasks.d.ts.map

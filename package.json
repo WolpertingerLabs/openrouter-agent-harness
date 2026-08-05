@@ -61,8 +61,8 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openrouter/agent": "^0.7.2",
-    "@openrouter/sdk": "^0.13.7",
+    "@openrouter/agent": "^0.8.0",
+    "@openrouter/sdk": "^1.2.7",
     "zod": "^4.0.0"
   },
   "devDependencies": {
@@ -78,5 +78,8 @@
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.4",
     "vitest": "^4.1.7"
+  },
+  "overrides": {
+    "@openrouter/sdk": "^1.2.7"
   }
 }

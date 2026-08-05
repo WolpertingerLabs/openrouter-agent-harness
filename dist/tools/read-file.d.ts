@@ -52,5 +52,7 @@ export declare function readFileTool(ctx?: ToolContext): import("@openrouter/age
     total_lines?: undefined;
     truncated?: undefined;
     notice?: undefined;
-}, unknown>>, Record<string, unknown>>;
+}, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=read-file.d.ts.map

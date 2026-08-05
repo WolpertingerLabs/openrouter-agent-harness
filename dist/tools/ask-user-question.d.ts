@@ -45,5 +45,7 @@ export declare function askUserQuestionTool(ctx?: ToolContext, opts?: AskUserQue
     }, z.core.$strip>>;
     allow_free_text: z.ZodOptional<z.ZodBoolean>;
     timeout_ms: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>, z.core.$ZodType<AskUserQuestionToolResult, unknown, z.core.$ZodTypeInternals<AskUserQuestionToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<AskUserQuestionToolResult, unknown, z.core.$ZodTypeInternals<AskUserQuestionToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=ask-user-question.d.ts.map

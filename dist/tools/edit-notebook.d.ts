@@ -22,5 +22,7 @@ export declare function editNotebookTool(ctx?: ToolContext): import("@openrouter
         code: "code";
         markdown: "markdown";
     }>>;
-}, z.core.$strip>, z.core.$ZodType<EditNotebookResult, unknown, z.core.$ZodTypeInternals<EditNotebookResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<EditNotebookResult, unknown, z.core.$ZodTypeInternals<EditNotebookResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=edit-notebook.d.ts.map

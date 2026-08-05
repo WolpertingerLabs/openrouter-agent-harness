@@ -41,5 +41,7 @@ export declare function bashTool(ctx?: ToolContext): import("@openrouter/agent")
     cwd: z.ZodOptional<z.ZodString>;
     description: z.ZodOptional<z.ZodString>;
     timeout_ms: z.ZodOptional<z.ZodNumber>;
-}, z.core.$strip>, z.core.$ZodType<BashResult, unknown, z.core.$ZodTypeInternals<BashResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<BashResult, unknown, z.core.$ZodTypeInternals<BashResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 //# sourceMappingURL=bash.d.ts.map

@@ -121,7 +121,9 @@ export interface SkillToolOptions {
 export declare function skillTool(opts: SkillToolOptions, ctx?: ToolContext): import("@openrouter/agent").ToolWithExecute<z.ZodObject<{
     name: z.ZodString;
     arguments: z.ZodOptional<z.ZodString>;
-}, z.core.$strip>, z.core.$ZodType<SkillToolResult, unknown, z.core.$ZodTypeInternals<SkillToolResult, unknown>>, Record<string, unknown>>;
+}, z.core.$strip>, z.core.$ZodType<SkillToolResult, unknown, z.core.$ZodTypeInternals<SkillToolResult, unknown>>, Record<string, unknown>, z.core.$ZodObject<Readonly<{
+    [k: string]: z.core.$ZodType<unknown, unknown, z.core.$ZodTypeInternals<unknown, unknown>>;
+}>, z.core.$ZodObjectConfig>>;
 /**
  * Split a frontmatter `allowed-tools` string into individual rule fragments.
  * Honors the documented grammar: rules separated by whitespace, but a
